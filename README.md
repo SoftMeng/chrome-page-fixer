@@ -26,10 +26,12 @@ A Manifest V3 Chrome extension that captures page errors from the **main world**
 
 - Captures `console.error` / `console.warn` / `console.info`, uncaught exceptions, unhandled `Promise` rejections, and resource-load failures (script/style/img).
 - Captures native resource load failures (`<img>` 502, `<script>` 404) via `chrome.webRequest.onResponseStarted` — for the cases browser consoles log but never emit JS events.
-- Captures `fetch` / `XMLHttpRequest` 4xx and 5xx, plus network-layer failures.
+- Captures `fetch` / `XMLHttpRequest` 4xx and 5xx, plus network-layer failures, and attaches the most recent `click` / `submit` / `keydown` target as `triggerSelector` / `triggerElement`.
 - Renders each error as a single entry in the Side Panel with a level color bar.
 - Single-copy and bulk-copy buttons, including an **AI-friendly envelope** that names kind, level, route, page title, viewport, focused element, source, and stack.
 - BYOK + custom proxy URL — Key is stored only in `chrome.storage.local`. The extension never hardcodes any provider.
+- Multi-turn chat with stable `#N` references; "问他" reuses the most recent session that references the same error hash.
+- Anthropic **Tool Use**: the agent can call 3 read-only Tools (`get_errors` / `get_error_by_index` / `search_errors_by_message`) to enumerate and search the captured error buffer; tool loop is capped at 5 rounds.
 
 ## Who it's for
 
@@ -149,15 +151,15 @@ A step-by-step checklist lives in `docs/qa/e2e-verification-phase1-4.md`. It cov
 - Phase 1–4: scaffold, capture, copy, AI envelope, BYOK + proxy.
 - Network error capture via `chrome.webRequest` + `fetch`/`XHR` interception.
 - AI-friendly envelope report with kind, level, route, viewport, focused element, source, stack.
-
-### In progress
-
-- Tool-call protocol (Phase 5): allow the proxy to invoke 5–8 read-only Tools (DOM snapshot, selector query, computed style).
+- Multi-turn chat with stable `#N` references and session reuse by error hash.
+- Network errors now carry `triggerSelector` / `triggerElement` (the most recent click/submit/keydown target); cross-origin / unrecorded cases are labeled honestly.
+- Anthropic Tool Use: 3 read-only Tools (`get_errors` / `get_error_by_index` / `search_errors_by_message`) with a 5-round loop cap.
 
 ### Planned
 
 - Source-map-aware stack resolution against a local repo path.
 - Recent-action timeline (clicks / inputs, max 5) for reproduction paths.
+- Write-side Tools with domain allow-list + second-confirm + audit (per `docs/constraint/agent-safety.md`).
 - Optional local `agent_broker` Rust binary that wraps Anthropic + OpenAI providers — for users who don't want to maintain a separate proxy.
 
 ## Known limitations

@@ -9,6 +9,27 @@ import {
   type ErrorKind,
   type ErrorLevel,
 } from "./shared/types";
+import { INSPECT_ELEMENT, INSPECT_ELEMENT_REPLY } from "./shared/messaging";
+
+const ATTR_WHITELIST = [
+  "id",
+  "class",
+  "role",
+  "type",
+  "name",
+  "href",
+  "disabled",
+  "hidden",
+  "aria-label",
+  "aria-hidden",
+  "aria-disabled",
+  "data-testid",
+  "data-action",
+  "data-id",
+  "data-state",
+];
+const MAX_CLASSES = 10;
+const ANCESTOR_DEPTH = 3;
 
 const CONSOLE_METHODS: ReadonlyArray<ErrorLevel> = ["error", "warn", "info"];
 
@@ -355,8 +376,91 @@ export default defineContentScript({
         focusedSelector: focused || undefined,
       });
     });
+
+    window.addEventListener("message", (event) => {
+      if (event.source !== window) return;
+      const data = event.data as { source?: string; type?: string; payload?: { selector?: string; requestId?: string } } | undefined;
+      if (!data || data.source !== MESSAGE_SOURCE || data.type !== INSPECT_ELEMENT) return;
+      const payload = data.payload;
+      if (!payload || typeof payload.selector !== "string" || typeof payload.requestId !== "string") return;
+      const result = inspectElement(payload.selector);
+      window.postMessage(
+        {
+          source: MESSAGE_SOURCE,
+          type: INSPECT_ELEMENT_REPLY,
+          payload: { requestId: payload.requestId, result },
+        },
+        window.location.origin,
+      );
+    });
   },
 });
+
+function pickAttributes(el: Element): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const name of ATTR_WHITELIST) {
+    if (el.hasAttribute(name)) {
+      const v = el.getAttribute(name);
+      if (typeof v === "string") out[name] = v.slice(0, 120);
+    }
+  }
+  return out;
+}
+
+function inspectElement(selector: string): {
+  selector: string;
+  found: boolean;
+  tag?: string;
+  id?: string;
+  classes?: string[];
+  attributes?: Record<string, string>;
+  rect?: { x: number; y: number; w: number; h: number };
+  visible?: boolean;
+  ancestorSelector?: string;
+  error?: string;
+} {
+  let el: Element | null;
+  try {
+    el = document.querySelector(selector);
+  } catch (err) {
+    return { selector, found: false, error: err instanceof Error ? err.message : "invalid selector" };
+  }
+  if (!el) return { selector, found: false };
+
+  const rect = el.getBoundingClientRect();
+  const className = typeof el.className === "string" ? el.className : "";
+  const classes = className
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, MAX_CLASSES);
+
+  return {
+    selector,
+    found: true,
+    tag: el.tagName ? el.tagName.toLowerCase() : undefined,
+    id: el.id || undefined,
+    classes,
+    attributes: pickAttributes(el),
+    rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
+    visible: el instanceof HTMLElement ? el.offsetParent !== null : el.getClientRects().length > 0,
+    ancestorSelector: summarizeAncestor(el),
+  };
+}
+
+function summarizeAncestor(el: Element): string {
+  const parts: string[] = [];
+  let cur: Element | null = el.parentElement;
+  let n = 0;
+  while (cur && n < ANCESTOR_DEPTH) {
+    const tag = cur.tagName ? cur.tagName.toLowerCase() : "";
+    if (!tag) break;
+    const id = cur.id ? `#${cur.id}` : "";
+    parts.unshift(`${tag}${id}`);
+    cur = cur.parentElement;
+    n += 1;
+  }
+  return parts.join(" > ");
+}
 
 function safeStringify(value: unknown): string {
   try {

@@ -8,12 +8,58 @@ import {
 import { buildChatMessages } from "./shared/chat-prompt";
 import { SYSTEM_PROMPT } from "./shared/system-prompt";
 import { getSettings } from "./shared/storage";
+import { TOOLS } from "./shared/tool-schema";
+import { TOOL_REGISTRY, type ToolContext, type ToolResult } from "./shared/tool-registry";
+import { ensureIndexNumbers } from "./shared/error-index";
+import { INSPECT_ELEMENT, INSPECT_ELEMENT_REPLY } from "./shared/messaging";
+import type { InspectElementInput, InspectElementResult } from "./shared/tools/inspect-element";
 import {
   MAX_ERRORS,
   STORAGE_KEY,
   type ErrorEntry,
   type NetworkResourceType,
 } from "./shared/types";
+
+const TOOL_LOOP_MAX_ROUNDS = 5;
+const INSPECT_TIMEOUT_MS = 1000;
+
+interface PendingInspect {
+  resolve: (value: InspectElementResult) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+const pendingInspects = new Map<string, PendingInspect>();
+
+function genRequestId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+async function callInspectElement(selector: string): Promise<InspectElementResult> {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tab = tabs[0];
+  if (!tab || typeof tab.id !== "number") {
+    return { selector, found: false, error: "no active tab" };
+  }
+  const requestId = genRequestId();
+  return new Promise<InspectElementResult>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingInspects.delete(requestId);
+      resolve({ selector, found: false, error: "inspect timeout" });
+    }, INSPECT_TIMEOUT_MS);
+    pendingInspects.set(requestId, { resolve, reject, timer });
+    chrome.tabs
+      .sendMessage(tab.id as number, { type: INSPECT_ELEMENT, payload: { selector, requestId } })
+      .catch((err: unknown) => {
+        const e = err instanceof Error ? err.message : "sendMessage failed";
+        const p = pendingInspects.get(requestId);
+        if (p) {
+          clearTimeout(p.timer);
+          pendingInspects.delete(requestId);
+          resolve({ selector, found: false, error: e });
+        }
+      });
+  });
+}
 
 const PROXY_URL_REJECT = ["localhost", "127.0.0.1", "::1", "0.0.0.0"];
 const PRIVATE_HOST_RE = /^(10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/;
@@ -67,7 +113,17 @@ function validateProxyUrl(raw: string): URL {
 
 interface AnthropicMessage {
   role: "user" | "assistant";
-  content: string;
+  content: string | ContentBlock[];
+}
+
+type ContentBlock =
+  | { type: "text"; text: string }
+  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
+  | { type: "tool_result"; tool_use_id: string; content: string };
+
+interface AnthropicResponse {
+  content: ContentBlock[];
+  stop_reason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | string | null;
 }
 
 async function runAnthropicRequest(
@@ -75,7 +131,15 @@ async function runAnthropicRequest(
   url: URL,
   messages: AnthropicMessage[],
   system: string = SYSTEM_PROMPT,
-): Promise<string> {
+  tools: typeof TOOLS | null = null,
+): Promise<AnthropicResponse> {
+  const body: Record<string, unknown> = {
+    model: "claude-3-5-sonnet-latest",
+    max_tokens: 1024,
+    system,
+    messages,
+  };
+  if (tools) body.tools = tools;
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -85,28 +149,15 @@ async function runAnthropicRequest(
       "anthropic-dangerous-direct-browser-access": "true",
       "x-extension-origin": chrome.runtime.id,
     },
-    body: JSON.stringify({
-      model: "claude-3-5-sonnet-latest",
-      max_tokens: 1024,
-      system,
-      messages,
-    }),
+    body: JSON.stringify(body),
   });
   if (!response.ok) {
     const body = await response.text().catch(() => "");
     throw new Error(`proxy returned ${response.status} ${body.slice(0, 200)}`);
   }
-  const data = (await response.json()) as {
-    content?: Array<{ type: string; text?: string }>;
-  };
-  const text = Array.isArray(data.content)
-    ? data.content
-        .filter((b) => b && b.type === "text" && typeof b.text === "string")
-        .map((b) => b.text)
-        .join("\n")
-    : "";
-  if (!text) throw new Error("empty proxy response");
-  return text;
+  const data = (await response.json()) as { content?: ContentBlock[]; stop_reason?: string };
+  const content = Array.isArray(data.content) ? data.content : [];
+  return { content, stop_reason: data.stop_reason ?? "end_turn" };
 }
 
 function isoNow(): string {
@@ -264,6 +315,20 @@ export default defineBackground(() => {
       })();
       return true;
     }
+    if (msg.type === INSPECT_ELEMENT_REPLY) {
+      const payload = msg.payload as { requestId?: string; result?: InspectElementResult } | undefined;
+      if (!payload || typeof payload.requestId !== "string") return;
+      const p = pendingInspects.get(payload.requestId);
+      if (p) {
+        clearTimeout(p.timer);
+        pendingInspects.delete(payload.requestId);
+        const result = payload.result && typeof payload.result === "object"
+          ? payload.result
+          : { selector: "", found: false, error: "bad result" };
+        p.resolve(result);
+      }
+      return false;
+    }
   });
 });
 
@@ -294,9 +359,73 @@ async function runAnalyzeTurn(req: AnalyzeTurnRequest): Promise<AnalyzeTurnRespo
       { maxHistoryTurns: 12, maxPromptChars: 6 * 1024 },
     );
 
-    const text = await runAnthropicRequest(settings.apiKey, url, messages);
+    const ctx = await buildToolContext(refs.map((e) => e.hash));
+    const text = await runAgentWithTools(settings.apiKey, url, messages, ctx);
     return { ok: true, content: text };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "analyze failed" };
+  }
+}
+
+async function buildToolContext(refHashes: string[]): Promise<ToolContext> {
+  const allErrors = await getBuffer();
+  const ensured = await ensureIndexNumbers(refHashes);
+  return {
+    buffer: allErrors,
+    hashToNumber: ensured,
+    inspectElement: (input: InspectElementInput) => callInspectElement(input.selector),
+  };
+}
+
+async function runAgentWithTools(
+  apiKey: string,
+  url: URL,
+  initialMessages: AnthropicMessage[],
+  ctx: ToolContext,
+): Promise<string> {
+  const messages: AnthropicMessage[] = [...initialMessages];
+  let finalText = "";
+
+  for (let round = 0; round < TOOL_LOOP_MAX_ROUNDS; round += 1) {
+    const resp = await runAnthropicRequest(apiKey, url, messages, SYSTEM_PROMPT, TOOLS);
+
+    if (resp.stop_reason === "tool_use") {
+      const toolUseBlocks = resp.content.filter(
+        (b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use",
+      );
+      const toolResults: ContentBlock[] = toolUseBlocks.map((use) => {
+        const def = TOOL_REGISTRY[use.name];
+        const payload = def ? def.run(ctx, use.input ?? {}) : null;
+        return {
+          type: "tool_result",
+          tool_use_id: use.id,
+          content: serializeToolResult(payload),
+        };
+      });
+      messages.push({ role: "assistant", content: resp.content });
+      messages.push({ role: "user", content: toolResults });
+      continue;
+    }
+
+    finalText = resp.content
+      .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
+      .map((b) => b.text)
+      .join("\n");
+    break;
+  }
+
+  if (!finalText) {
+    finalText = "[agent reached tool loop limit without final answer]";
+  }
+  return finalText;
+}
+
+function serializeToolResult(value: ToolResult): string {
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
   }
 }

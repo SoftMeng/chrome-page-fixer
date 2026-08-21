@@ -1,6 +1,8 @@
 export const PAGE_ERROR = "PAGE_ERROR";
 export const ANALYZE = "ANALYZE";
 export const ANALYZE_TURN = "ANALYZE_TURN";
+export const INSPECT_ELEMENT = "INSPECT_ELEMENT";
+export const INSPECT_ELEMENT_REPLY = "INSPECT_ELEMENT_REPLY";
 
 export interface AnalyzeRequest {
   prompt: string;

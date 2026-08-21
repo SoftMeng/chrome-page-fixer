@@ -4,9 +4,24 @@
 
 | 分类 | 默认状态 | 示例 |
 | --- | --- | --- |
-| 只读 | 默认开放 | `get_console_errors`、`get_page_info`、`get_dom_snapshot`、`query_selector`、`get_computed_style`、`search_in_page`、`take_screenshot` |
+| 只读 | 默认开放 | `get_errors`、`get_error_by_index`、`search_errors_by_message` |
 | 写 | 默认关闭 | `click`、`type`、`scroll`、`select_option`、`fill_form` |
 | 调试辅助 | 默认关闭 | `execute_js`、`highlight_element`、`get_local_storage` |
+
+## 当前已实现 Tool（Post-MVP 阶段1+2）
+
+| name | input | output | risk_level |
+| --- | --- | --- | --- |
+| `get_errors` | `{ kind?: ErrorKind, level?: ErrorLevel, limit?: 1..50 }` | `ErrorEntry[]`（按 timestamp 倒序） | `readonly` |
+| `get_error_by_index` | `{ index: number }` | `ErrorEntry \| null` | `readonly` |
+| `search_errors_by_message` | `{ query: string 1..64, limit?: 1..50 }` | `ErrorEntry[]`（按 timestamp 倒序） | `readonly` |
+| `inspect_element` | `{ selector: string 1..256, 拒绝 :root/html/body/* }` | `{found, tag, id, classes, attributes(白名单), rect, visible, ancestorSelector}` | `readonly` |
+
+`inspect_element` 数据来源：content script (MAIN world) `document.querySelector`，权限 0。
+白名单 attribute：`id / class / role / type / name / href / disabled / hidden / aria-label / aria-hidden / aria-disabled / data-testid / data-action / data-id / data-state`。
+**不返回**：`textContent` / `value` / `innerHTML` / `outerHTML` / 任何非白名单 attribute（避免敏感数据泄漏）。
+调用方：仅 Service Worker 的 tool runner loop；不允许 content script 直接调用。
+桥接：background → `chrome.tabs.sendMessage(INSPECT_ELEMENT)` → ISOLATED content → `window.postMessage` → MAIN content → 反向链返回。`chrome.tabs.sendMessage` 1 秒超时。
 
 ## Tool schema 必填项
 

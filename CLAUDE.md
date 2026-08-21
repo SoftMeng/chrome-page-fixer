@@ -6,9 +6,20 @@ This file provides guidance to Claude Code in this repository.
 
 - **项目类型**：Chrome 扩展（Manifest V3）
 - **目标用户**：前端开发者与前端调试协作者
-- **核心能力**：结构化错误捕获与一键复制、内置 Agent 分析当前页面、可选页面操作
-- **MVP 范围**：错误捕获 → 一键复制 → Side Panel 列表 → 云端 Agent + 5–8 个只读 Tool
-- **暂不在 MVP**：写操作 Tool、Rig WASM Agent、本地 LLM、`chrome.debugger`、自动修复
+- **核心能力**：结构化错误捕获 → 一键复制 / Side Panel 列表 → 内置多轮 AI 对话（基于 envelope）
+- **MVP 状态**：已交付
+  - 错误捕获（console / uncaught / unhandledrejection / resource-load / webRequest 4xx-5xx）
+  - Side Panel：3 Tab（错误 / 对话 / 历史）
+  - 多轮 AI 对话（chrome.storage.local 持久化、stable #N 引用、askAbout 按 hash 复用会话）
+  - System Prompt 独立维护，注入 Anthropic Messages `system` 字段
+  - BYOK + Proxy URL（Anthropic 协议）
+- **Post-MVP 候选**：网络错误补 DOM 上下文（劫持 content script fetch/XHR）、Anthropic Tool Use（5–8 个只读 Tool）、写操作 Tool（域名白名单 + 二次确认）
+- **Post-MVP 阶段1 已交付**：
+  - DOM 上下文：网络错误带 `triggerSelector` / `triggerElement`（跨域 / 未记录诚实标注）
+  - Anthropic Tool Use：3 个只读 Tool（`get_errors` / `get_error_by_index` / `search_errors_by_message`），tool runner 硬上限 5 轮
+- **Post-MVP 阶段2 已交付**：
+  - 第 4 个 Tool `inspect_element`：CSS selector → tag / id / class / 受限 attribute 白名单 / bounding rect / 可见性 / 前 3 层祖先 selector；**不**返回 `textContent` / `value` / `innerHTML`（隐私）
+  - 桥接：background → content script（ISOLATED → MAIN world），`chrome.tabs.sendMessage` 1 秒超时；`:root` / `html` / `body` / `*` 被拒绝
 
 ## 关键决策（每条必须追溯到 QA 段落）
 
@@ -20,34 +31,63 @@ This file provides guidance to Claude Code in this repository.
    出处：`docs/qa/extension-pitfalls-and-best-practices.md` §3.1。
 4. **任何事实必须标注证据等级** — 不把第三方建议或社区贴文直接当成官方事实。
    出处：`docs/qa/chrome-error-capture-mcp-bridge.md` §2。
+5. **System Prompt 注入走 Anthropic Messages `system` 字段** — 与 `messages` 同级，不混入 user/assistant；内容独立文件 `entrypoints/shared/system-prompt.ts` 维护，每次会话固定。
+   出处：Anthropic Messages API 文档（system 字段）。
 
 ## 技术栈
 
-- Manifest V3 + Plasmo 或 WXT（脚手架）
-- TypeScript（Content Script、Background、Side Panel）
-- React（Side Panel UI）
-- 官方 MCP SDK（TypeScript 端，不在 WASM）
+- Manifest V3 + WXT（脚手架）
+- TypeScript strict + `noUncheckedIndexedAccess`（Content Script、Background、Side Panel、Options）
+- React 18（Side Panel / Options UI）
+- Anthropic Messages API（BYOK + Proxy URL；`x-api-key` + `anthropic-dangerous-direct-browser-access`）
 - Side Panel 作为主 UI 入口
+- chrome.storage.local 持久化（错误缓冲、会话、引用编号、设置）
 
-## 项目结构（初始态）
+## 项目结构（当前）
 
 ```
 .
 ├── CLAUDE.md                       # 本文件
 ├── docs/
-│   ├── qa/                        # 外部资料核验与决策记录
-│   │   ├── README.md              # QA 索引、阅读顺序、变更日志
+│   ├── qa/                         # 外部资料核验与决策记录
+│   │   ├── README.md
 │   │   ├── chrome-error-capture-mcp-bridge.md
 │   │   ├── claude-in-chrome-alternatives.md
 │   │   ├── in-browser-agent-extension-plan.md
 │   │   └── extension-pitfalls-and-best-practices.md
-│   └── constraint/                # 工程约束（可被 lint / 评审引用）
+│   └── constraint/                 # 工程约束（可被 lint / 评审引用）
 │       ├── README.md
 │       ├── manifest-permissions.md
 │       ├── tool-design.md
 │       ├── agent-safety.md
 │       └── privacy-and-consent.md
-└── (后续按扩展脚手架生成 src/、public/ 等)
+└── entrypoints/
+    ├── background.ts               # SW：监听 + 调用 Anthropic
+    ├── capture-main.content.ts     # 主世界脚本（console / error / unhandledrejection）
+    ├── capture.content.ts          # 隔离世界脚本（postMessage → PAGE_ERROR）
+    ├── options/App.tsx             # BYOK / Proxy / App Hint 设置
+    └── sidepanel/
+        ├── App.tsx                 # 3 Tab 容器
+        ├── ChatPanel.tsx           # 对话面板
+        ├── HistoryView.tsx         # 历史会话列表
+        ├── CopyButton.tsx          # 复制按钮
+        ├── markdown.tsx            # 零依赖 Markdown 渲染（XSS-safe）
+        ├── useAppState.ts          # 状态聚合 hook
+        ├── useChatUiState.ts       # busy / chatError hook
+        ├── main.tsx
+        ├── styles.css              # 错误列表 / 历史样式
+        └── chat-panel.css          # 对话面板样式
+
+    shared/
+    ├── types.ts                    # ErrorEntry / ChatSession 等
+    ├── messaging.ts                # PAGE_ERROR / ANALYZE / ANALYZE_TURN
+    ├── storage.ts                  # settings（apiKey / proxyUrl / appHint）
+    ├── storage-constants.ts
+    ├── chat-storage.ts             # 会话持久化
+    ├── chat-prompt.ts              # 多轮 messages 构建
+    ├── system-prompt.ts            # 独立维护的 System Prompt
+    ├── error-index.ts              # stable hash→#N 映射
+    └── format.ts                   # envelope / Markdown 输出
 ```
 
 ## 约束引用
@@ -71,20 +111,21 @@ This file provides guidance to Claude Code in this repository.
 | 质量与测试 | `harness-testing` / `harness-quality-verification` |
 | 体系演进 | `harness-evolution` |
 | 项目初始化与 CLAUDE 维护 | `harness-init` |
+| System Prompt 设计 | `harness-prompt-engineer` / `harness-human-prompt` |
 
 ## 开发流程
 
 1. 任何外部资料先经证据等级评估再写入决策记录。
-2. 任何新能力先在 QA 中评估，再进入 MVP。
+2. 任何新能力先在 QA 中评估，再进入 Post-MVP。
 3. 任何权限新增必须先通过 `docs/constraint/manifest-permissions.md` 评审。
 4. 任何 Tool 新增必须先在 `docs/constraint/tool-design.md` 中登记 schema。
-6. 任何 Agent 操作变更必须先经过 `docs/constraint/agent-safety.md` 评审。
-5. 任何上传云端的字段必须先在 `docs/constraint/privacy-and-consent.md` 中登记。
+5. 任何 Agent 操作变更必须先经过 `docs/constraint/agent-safety.md` 评审。
+6. 任何上传云端的字段必须先在 `docs/constraint/privacy-and-consent.md` 中登记。
 
-设计和开发过程中，我们通常遵循工程铁律：
+## 工程铁律
 
-- 【铁律】工程的设计和架构时应遵循单一职责的原则。极力避免职责不清晰、越界、混合、混淆、命名混乱、引用混乱、归属不清晰、边界抽象、逻辑重复、异常静默处理等，应正确性、可读性、可维护性、性能、安全为目标，不应以“打补丁”、“敷衍”、“捏造”、“臆测”、“留给下次处理”等不负责的态度敷衍了事。
-- 【铁律】遵循整洁之道，文档篇幅不是越大越好，而是越精炼有效越好。不敷衍也不过度设计，追求简洁高效。（通常AI会很啰嗦的加戏，导致"加得越多错的越多"，实际是无论是文档还是代码，都应该遵循简洁而有效的设计）
+- 单一职责：避免职责不清晰、越界、混合、命名混乱、引用混乱、归属不清晰、边界抽象、逻辑重复、异常静默处理；以正确性、可读性、可维护性、性能、安全为目标，不打补丁、不敷衍、不臆测、不留尾巴。
+- 整洁之道：文档与代码篇幅追求精炼有效；不敷衍也不过度设计，简洁高效。
 
 ## 重要注意事项
 
