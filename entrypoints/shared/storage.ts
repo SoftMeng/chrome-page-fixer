@@ -30,18 +30,22 @@ export async function getSettings(): Promise<Settings> {
 }
 
 export async function setSettings(partial: Partial<Settings>): Promise<void> {
-  const current = await getSettings();
+  const stored = await chrome.storage.local.get(STORAGE_KEY);
+  const current =
+    stored[STORAGE_KEY] && typeof stored[STORAGE_KEY] === "object"
+      ? (stored[STORAGE_KEY] as Settings)
+      : {};
   const next: Settings = { ...current };
-  if (partial.apiKey !== undefined) next.apiKey = partial.apiKey;
-  if (partial.proxyUrl !== undefined) next.proxyUrl = partial.proxyUrl;
+  for (const key of ["apiKey", "proxyUrl", "appHint"] as const) {
+    const v = partial[key];
+    if (v === undefined) delete next[key];
+    else next[key] = v;
+  }
   await chrome.storage.local.set({ [STORAGE_KEY]: next });
 }
 
 export async function clearApiKey(): Promise<void> {
-  const current = await getSettings();
-  const next: Settings = { ...current };
-  delete next.apiKey;
-  await chrome.storage.local.set({ [STORAGE_KEY]: next });
+  await setSettings({ apiKey: undefined });
 }
 
 function safeUrl(raw: string): boolean {

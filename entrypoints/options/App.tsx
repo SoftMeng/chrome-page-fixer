@@ -88,16 +88,19 @@ export function App() {
       </label>
 
       <label style={labelStyle}>
-        App Hint（项目根路径 / 关键目录）
+        App Hint（项目背景，给 AI 看的）
         <input
           type="text"
           autoComplete="off"
           value={appHint}
           onChange={(e) => setAppHint(e.target.value)}
-          placeholder="e.g. /Users/me/work/yudao (frontend root)"
+          placeholder="e.g. yudao 前端：React + antd；列表页常见 502"
           style={inputStyle}
         />
       </label>
+      <p style={{ marginTop: 4, color: "#888", fontSize: 11, lineHeight: 1.4 }}>
+        本扩展不读取宿主机文件；此字段会原样写进错误信封的「App-hint:」一行，仅供复制粘贴给下游 AI / Claude Code 时携带上下文。
+      </p>
 
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <button type="button" onClick={onSave} style={btnStyle}>

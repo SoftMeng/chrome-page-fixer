@@ -88,10 +88,15 @@ export async function createSession(initialRefs: string[]): Promise<ChatSession>
   return session;
 }
 
+export interface AppendTurnResult {
+  session: ChatSession;
+  messageId: string;
+}
+
 export async function appendTurn(
   sessionId: string,
   message: Omit<ChatMessage, "id" | "timestamp">,
-): Promise<ChatSession> {
+): Promise<AppendTurnResult> {
   const sessions = await load();
   const idx = sessions.findIndex((s) => s.id === sessionId);
   if (idx === -1) throw new Error(`session not found: ${sessionId}`);
@@ -118,9 +123,55 @@ export async function appendTurn(
   const updated = [...sessions];
   updated[idx] = next;
   await save(updated);
-  return next;
+  return { session: next, messageId: turn.id };
 }
 
 export async function clearSessions(): Promise<void> {
   await chrome.storage.local.set({ [CHAT_STORAGE_KEY]: EMPTY });
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  const sessions = await load();
+  const next = sessions.filter((s) => s.id !== sessionId);
+  await save(next);
+}
+
+export async function updateSessionRefs(
+  sessionId: string,
+  refs: string[],
+): Promise<ChatSession> {
+  const sessions = await load();
+  const idx = sessions.findIndex((s) => s.id === sessionId);
+  if (idx === -1) throw new Error(`session not found: ${sessionId}`);
+  const current = sessions[idx];
+  if (!current) throw new Error(`session not found: ${sessionId}`);
+  const next: ChatSession = {
+    ...current,
+    refs: Array.from(new Set(refs)),
+    updatedAt: Date.now(),
+  };
+  const updated = [...sessions];
+  updated[idx] = next;
+  await save(updated);
+  return next;
+}
+
+export async function deleteMessage(
+  sessionId: string,
+  messageId: string,
+): Promise<ChatSession> {
+  const sessions = await load();
+  const idx = sessions.findIndex((s) => s.id === sessionId);
+  if (idx === -1) throw new Error(`session not found: ${sessionId}`);
+  const current = sessions[idx];
+  if (!current) throw new Error(`session not found: ${sessionId}`);
+  const next: ChatSession = {
+    ...current,
+    messages: current.messages.filter((m) => m.id !== messageId),
+    updatedAt: Date.now(),
+  };
+  const updated = [...sessions];
+  updated[idx] = next;
+  await save(updated);
+  return next;
 }

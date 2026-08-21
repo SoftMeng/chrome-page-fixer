@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { CopyButton } from "./CopyButton";
 import { ChatPanel } from "./ChatPanel";
-import { toMarkdown, toReport } from "../shared/format";
+import { HistoryView } from "./HistoryView";
+import { formatTime, toMarkdown, toReport } from "../shared/format";
 import {
   ANALYZE_TURN,
   type AnalyzeTurnRequest,
@@ -9,195 +10,305 @@ import {
 } from "../shared/messaging";
 import {
   appendTurn,
-  createSession,
   clearSessions,
+  createSession,
+  deleteMessage,
+  deleteSession,
   getSessions,
+  updateSessionRefs,
 } from "../shared/chat-storage";
-import {
-  MAX_ERRORS,
-  STORAGE_KEY,
-  type ChatSession,
-  type ErrorEntry,
-} from "../shared/types";
+import { clearIndex, ensureIndexNumbers } from "../shared/error-index";
+import { useAppState } from "./useAppState";
+import { useChatUiState } from "./useChatUiState";
+import { type ChatSession, type ErrorEntry } from "../shared/types";
 
 const RECENT_N = 5;
 
-function format(ts: number): string {
-  return new Date(ts).toLocaleTimeString();
+type Tab = "errors" | "chat" | "history";
+
+function findRecentSessionByHash(
+  hash: string,
+  sessions: ChatSession[],
+): ChatSession | undefined {
+  for (const s of sessions) {
+    if (s.refs.includes(hash)) return s;
+  }
+  return undefined;
 }
 
 export function App() {
-  const [errors, setErrors] = useState<ErrorEntry[]>([]);
-  const [session, setSession] = useState<ChatSession | null>(null);
-  const [chatOpen, setChatOpen] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [chatError, setChatError] = useState<string>("");
+  const [tab, setTab] = useState<Tab>("errors");
+  const ui = useChatUiState();
 
-  useEffect(() => {
-    void chrome.storage.local.get(STORAGE_KEY).then((stored) => {
-      setErrors(Array.isArray(stored.errors) ? (stored.errors as ErrorEntry[]) : []);
-    });
-    const listener: Parameters<typeof chrome.storage.onChanged.addListener>[0] = (changes, area) => {
-      if (area !== "local") return;
-      const change = changes[STORAGE_KEY];
-      if (!change) return;
-      setErrors(Array.isArray(change.newValue) ? (change.newValue as ErrorEntry[]) : []);
-    };
-    chrome.storage.onChanged.addListener(listener);
-    return () => chrome.storage.onChanged.removeListener(listener);
-  }, []);
+  const {
+    sorted,
+    sessions,
+    setSessions,
+    session,
+    setSession,
+    hashToIndex,
+    lookup,
+  } = useAppState();
 
-  useEffect(() => {
-    void getSessions().then((all) => {
-      const latest = all.sort((a, b) => b.updatedAt - a.updatedAt)[0];
-      setSession(latest ?? null);
-    });
-  }, []);
+  const refEntries = useMemo(
+    () =>
+      session
+        ? session.refs
+            .map((h) => lookup.get(h))
+            .filter((e): e is ErrorEntry => Boolean(e))
+        : [],
+    [session, lookup],
+  );
 
-  const sorted = [...errors].sort((a, b) => b.timestamp - a.timestamp);
-  const latest = sorted[0];
-  const recentN = sorted.slice(0, RECENT_N);
-  const lookup = new Map(errors.map((e) => [e.hash, e]));
-
-  async function openChatForHash(hash: string) {
+  async function askAbout(hash: string) {
     if (!lookup.has(hash)) return;
-    const existing = session;
-    if (existing && existing.refs.includes(hash)) return;
-    const created = await createSession(existing ? Array.from(new Set([...existing.refs, hash])) : [hash]);
+    ui.clearChatError();
+    const existing = findRecentSessionByHash(hash, sessions);
+    if (existing) {
+      setSession(existing);
+      setTab("chat");
+      return;
+    }
+    const created = await createSession([hash]);
+    setSessions((prev) => [created, ...prev]);
     setSession(created);
+    setTab("chat");
   }
 
-  async function onClearSession() {
+  async function newBlankSession() {
+    ui.clearChatError();
+    const created = await createSession([]);
+    setSessions((prev) => [created, ...prev]);
+    setSession(created);
+    setTab("chat");
+  }
+
+  async function switchSession(id: string) {
+    ui.clearChatError();
+    const target = sessions.find((s) => s.id === id);
+    if (!target) return;
+    setSession(target);
+    setTab("chat");
+  }
+
+  async function removeSession(id: string) {
+    ui.clearChatError();
+    await deleteSession(id);
+    setSessions((prev) => prev.filter((s) => s.id !== id));
+    setSession((current) => (current?.id === id ? null : current));
+  }
+
+  async function removeRef(hash: string) {
     if (!session) return;
-    const ok = window.confirm("清空所有会话？此操作不可撤销。");
-    if (!ok) return;
-    await clearSessions();
-    setSession(null);
-  }
-
-  function toggleChat() {
-    setChatOpen((v) => !v);
+    const nextRefs = session.refs.filter((h) => h !== hash);
+    const updated = await updateSessionRefs(session.id, nextRefs);
+    setSession(updated);
+    setSessions((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
   }
 
   async function onSend(content: string): Promise<void> {
-    if (!session || busy) return;
-    setChatError("");
-    setBusy(true);
+    if (!session || ui.busy) return;
+    const sessionRef = session;
+    const refs = sessionRef.refs;
+    ui.clearChatError();
+    let userMessageId: string | null = null;
     try {
-      const userMessage = await appendTurn(session.id, {
-        role: "user",
-        content,
-        refs: session.refs,
-      });
-      setSession(userMessage);
+      await ui.withBusy(async () => {
+        const userResult = await appendTurn(sessionRef.id, {
+          role: "user",
+          content,
+          refs,
+        });
+        userMessageId = userResult.messageId;
+        setSession(userResult.session);
+        setSessions((prev) =>
+          prev
+            .map((s) => (s.id === userResult.session.id ? userResult.session : s))
+            .sort((a, b) => b.updatedAt - a.updatedAt),
+        );
 
-      const payload: AnalyzeTurnRequest = {
-        sessionId: session.id,
-        userContent: content,
-        refs: session.refs,
-        history: userMessage.messages,
-      };
-      const reply = await chrome.runtime.sendMessage({
-        type: ANALYZE_TURN,
-        payload,
+        const payload: AnalyzeTurnRequest = {
+          sessionId: sessionRef.id,
+          userContent: content,
+          refs,
+          history: userResult.session.messages,
+        };
+        const reply = await chrome.runtime.sendMessage({
+          type: ANALYZE_TURN,
+          payload,
+        });
+        const data = reply as AnalyzeTurnResponse | undefined;
+        if (!data || !data.ok) {
+          throw new Error(data?.error ?? "analyze failed");
+        }
+        const assistantResult = await appendTurn(sessionRef.id, {
+          role: "assistant",
+          content: data.content ?? "",
+          refs: [],
+        });
+        setSession(assistantResult.session);
+        setSessions((prev) =>
+          prev
+            .map((s) => (s.id === assistantResult.session.id ? assistantResult.session : s))
+            .sort((a, b) => b.updatedAt - a.updatedAt),
+        );
       });
-      const data = reply as AnalyzeTurnResponse | undefined;
-      if (!data || !data.ok) {
-        throw new Error(data?.error ?? "analyze failed");
-      }
-      const assistantMessage = await appendTurn(session.id, {
-        role: "assistant",
-        content: data.content ?? "",
-        refs: [],
-      });
-      setSession(assistantMessage);
     } catch (err) {
-      setChatError(err instanceof Error ? err.message : "发送失败");
-    } finally {
-      setBusy(false);
+      if (userMessageId) {
+        try {
+          const rolled = await deleteMessage(sessionRef.id, userMessageId);
+          setSession((current) => (current?.id === rolled.id ? rolled : current));
+          setSessions((prev) => prev.map((s) => (s.id === rolled.id ? rolled : s)));
+        } catch {
+          // rollback failure is not fatal; user message stays in storage
+        }
+      }
+      ui.setChatError(err instanceof Error ? err.message : "发送失败");
     }
   }
+
+  async function onClearAll() {
+    const ok = window.confirm("清空所有会话和错误序号？此操作不可撤销。");
+    if (!ok) return;
+    ui.clearChatError();
+    await clearSessions();
+    await clearIndex();
+    setSessions([]);
+    setSession(null);
+  }
+
+  const latest = sorted[0];
+  const recentN = sorted.slice(0, RECENT_N);
 
   return (
     <main className="app">
       <header className="header">
-        <h1>Chrome Page Fixer</h1>
+        <span className="brand">Page Fixer</span>
+        <div className="tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            className="tab"
+            data-active={tab === "errors"}
+            aria-selected={tab === "errors"}
+            onClick={() => setTab("errors")}
+          >
+            错误
+            <span className="tab-count">{sorted.length}</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            className="tab"
+            data-active={tab === "chat"}
+            aria-selected={tab === "chat"}
+            onClick={() => setTab("chat")}
+          >
+            对话
+          </button>
+          <button
+            type="button"
+            role="tab"
+            className="tab"
+            data-active={tab === "history"}
+            aria-selected={tab === "history"}
+            onClick={() => setTab("history")}
+          >
+            历史
+            <span className="tab-count">{sessions.length}</span>
+          </button>
+        </div>
+        <button type="button" className="header-link" onClick={() => chrome.runtime.openOptionsPage()}>
+          设置
+        </button>
       </header>
 
-      <div className="status">
-        <span>
-          {errors.length === 0 ? "暂无错误" : `${errors.length} / ${MAX_ERRORS} 条`}
-        </span>
-        <span>·</span>
-        <button type="button" className="link" onClick={() => chrome.runtime.openOptionsPage()}>
-          打开 Options
-        </button>
-      </div>
+      {tab === "errors" ? (
+        <div className="view">
+          <div className="toolbar">
+            <CopyButton
+              label="复制最新 1 条"
+              getText={() => (latest ? toMarkdown(latest) : "")}
+            />
+            <CopyButton
+              label={`复制最近 ${RECENT_N} 条`}
+              getText={() => toReport(recentN)}
+            />
+          </div>
 
-      <div className="toolbar">
-        <CopyButton
-          label="复制最新 1 条"
-          getText={() => (latest ? toMarkdown(latest) : "")}
-        />
-        <CopyButton
-          label={`复制最近 ${RECENT_N} 条`}
-          getText={() => toReport(recentN)}
-        />
-        <button type="button" className="toolbar-toggle" onClick={toggleChat}>
-          {chatOpen ? "关闭聊天" : "打开聊天"}
-        </button>
-        {chatOpen && session && session.messages.length > 0 && (
-          <button type="button" className="toolbar-toggle" onClick={() => void onClearSession()}>
-            清空会话
-          </button>
-        )}
-      </div>
-
-      {chatError && (
-        <pre className="analysis-result" data-state="error">
-          {chatError}
-        </pre>
-      )}
-
-      {chatOpen && session && (
-        <ChatPanel
-          session={session}
-          refs={session.refs.map((h) => lookup.get(h)).filter((e): e is ErrorEntry => Boolean(e))}
-          busy={busy}
-          onSend={onSend}
-        />
-      )}
-
-      {sorted.length === 0 ? (
-        <div className="empty-state">暂无错误</div>
+          {sorted.length === 0 ? (
+            <div className="empty-state">暂无错误</div>
+          ) : (
+            <ul className="error-list">
+              {sorted.map((e) => {
+                const idx = hashToIndex.get(e.hash);
+                return (
+                  <li key={e.hash} className="error-item" data-level={e.level}>
+                    <div className="error-level-bar" />
+                    <div className="error-body">
+                      <div className="error-row">
+                        <div className="error-meta">
+                          <span className="error-index">{idx ? `#${idx}` : "#-"}</span>
+                          <span className="error-kind">{e.kind}</span>
+                          <span className="error-time">{formatTime(e.timestamp)}</span>
+                        </div>
+                        <div className="error-actions">
+                          <button type="button" className="error-item-ask" onClick={() => void askAbout(e.hash)}>
+                            问他
+                          </button>
+                          <CopyButton label="复制" getText={() => toMarkdown(e)} />
+                        </div>
+                      </div>
+                      <div className="error-message">{e.message}</div>
+                      <div className="error-url">{e.url}</div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      ) : tab === "chat" ? (
+        <div className="view">
+          {ui.chatError && (
+            <pre className="analysis-result" data-state="error">
+              {ui.chatError}
+            </pre>
+          )}
+          {session ? (
+            <ChatPanel
+              messages={session.messages}
+              refs={refEntries}
+              hashToIndex={hashToIndex}
+              busy={ui.busy}
+              onSend={onSend}
+              onRemoveRef={(h) => void removeRef(h)}
+              onGoHistory={() => setTab("history")}
+            />
+          ) : (
+            <div className="empty-state">
+              暂无会话。到「错误」页点某条错误的「问他」开始。
+            </div>
+          )}
+          <div className="toolbar toolbar-floating">
+            <button type="button" className="session-new" onClick={() => void newBlankSession()}>
+              + 新会话
+            </button>
+            <button type="button" className="session-clear" onClick={() => void onClearAll()}>
+              清空
+            </button>
+          </div>
+        </div>
       ) : (
-        <ul className="error-list">
-          {sorted.map((e) => (
-            <li key={e.hash} className="error-item" data-level={e.level}>
-              <div className="error-level-bar" />
-              <div className="error-body">
-                <div className="error-row">
-                  <div className="error-meta">
-                    <span className="error-level">{e.level}</span>
-                    <span>{format(e.timestamp)}</span>
-                  </div>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <button
-                      type="button"
-                      className="error-item-ask"
-                      onClick={() => void openChatForHash(e.hash)}
-                    >
-                      问他
-                    </button>
-                    <CopyButton label="复制" getText={() => toMarkdown(e)} />
-                  </div>
-                </div>
-                <div className="error-message">{e.message}</div>
-                <div className="error-url">{e.url}</div>
-              </div>
-            </li>
-          ))}
-        </ul>
+        <HistoryView
+          sessions={sessions}
+          currentId={session?.id ?? null}
+          lookup={lookup}
+          hashToIndex={hashToIndex}
+          onOpen={(id) => void switchSession(id)}
+          onDelete={(id) => void removeSession(id)}
+          onClearAll={() => void onClearAll()}
+        />
       )}
     </main>
   );

@@ -10,9 +10,17 @@ function pad(n: number): string {
   return n < 10 ? `0${n}` : `${n}`;
 }
 
-function formatTime(ts: number): string {
+export function formatTime(ts: number): string {
   const d = new Date(ts);
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+export function formatRelativeTime(ts: number, now: number = Date.now()): string {
+  const diff = now - ts;
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+  return `${Math.floor(diff / 86_400_000)} 天前`;
 }
 
 function sanitize(s: string): string {
@@ -85,8 +93,6 @@ export function toReport(entries: ErrorEntry[]): string {
     if (idx < sorted.length - 1) lines.push("");
   });
 
-  lines.push("");
-  lines.push("请基于以上错误分析根因并给出最小修复建议。");
   return lines.join("\n");
 }
 

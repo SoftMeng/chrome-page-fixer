@@ -6,7 +6,8 @@ import {
   type AnalyzeTurnResponse,
 } from "./shared/messaging";
 import { buildChatMessages } from "./shared/chat-prompt";
-import { DEFAULT_SETTINGS } from "./shared/storage-constants";
+import { SYSTEM_PROMPT } from "./shared/system-prompt";
+import { getSettings } from "./shared/storage";
 import {
   MAX_ERRORS,
   STORAGE_KEY,
@@ -73,6 +74,7 @@ async function runAnthropicRequest(
   apiKey: string,
   url: URL,
   messages: AnthropicMessage[],
+  system: string = SYSTEM_PROMPT,
 ): Promise<string> {
   const response = await fetch(url, {
     method: "POST",
@@ -86,6 +88,7 @@ async function runAnthropicRequest(
     body: JSON.stringify({
       model: "claude-3-5-sonnet-latest",
       max_tokens: 1024,
+      system,
       messages,
     }),
   });
@@ -186,10 +189,6 @@ export default defineBackground(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
   chrome.runtime.onInstalled.addListener(async () => {
-    const existing = await chrome.storage.local.get(STORAGE_KEY);
-    if (!existing[STORAGE_KEY]) {
-      await chrome.storage.local.set({ [STORAGE_KEY]: { ...DEFAULT_SETTINGS } });
-    }
     await getBuffer();
   });
 
@@ -237,14 +236,9 @@ export default defineBackground(() => {
       if (typeof prompt !== "string") return;
       (async () => {
         try {
-          const stored = await chrome.storage.local.get("settings");
-          const settings = (stored.settings ?? {}) as { apiKey?: unknown; proxyUrl?: unknown };
-          if (typeof settings.apiKey !== "string" || !settings.apiKey) {
-            throw new Error("missing api key");
-          }
-          if (typeof settings.proxyUrl !== "string" || !settings.proxyUrl) {
-            throw new Error("missing proxy url");
-          }
+          const settings = await getSettings();
+          if (!settings.apiKey) throw new Error("missing api key");
+          if (!settings.proxyUrl) throw new Error("missing proxy url");
           const url = validateProxyUrl(settings.proxyUrl);
           if (prompt.length > 8 * 1024) throw new Error("prompt too large");
           const text = await runAnthropicRequest(settings.apiKey, url, [
@@ -275,14 +269,9 @@ export default defineBackground(() => {
 
 async function runAnalyzeTurn(req: AnalyzeTurnRequest): Promise<AnalyzeTurnResponse> {
   try {
-    const stored = await chrome.storage.local.get("settings");
-    const settings = (stored.settings ?? {}) as { apiKey?: unknown; proxyUrl?: unknown };
-    if (typeof settings.apiKey !== "string" || !settings.apiKey) {
-      throw new Error("missing api key");
-    }
-    if (typeof settings.proxyUrl !== "string" || !settings.proxyUrl) {
-      throw new Error("missing proxy url");
-    }
+    const settings = await getSettings();
+    if (!settings.apiKey) throw new Error("missing api key");
+    if (!settings.proxyUrl) throw new Error("missing proxy url");
     const url = validateProxyUrl(settings.proxyUrl);
 
     const allErrors = await getBuffer();
