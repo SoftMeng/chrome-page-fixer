@@ -1,4 +1,11 @@
-import { ANALYZE, PAGE_ERROR } from "./shared/messaging";
+import {
+  ANALYZE,
+  ANALYZE_TURN,
+  PAGE_ERROR,
+  type AnalyzeTurnRequest,
+  type AnalyzeTurnResponse,
+} from "./shared/messaging";
+import { buildChatMessages } from "./shared/chat-prompt";
 import { DEFAULT_SETTINGS } from "./shared/storage-constants";
 import {
   MAX_ERRORS,
@@ -55,6 +62,48 @@ function validateProxyUrl(raw: string): URL {
     throw new Error("proxy url must be http(s)");
   }
   return url;
+}
+
+interface AnthropicMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+async function runAnthropicRequest(
+  apiKey: string,
+  url: URL,
+  messages: AnthropicMessage[],
+): Promise<string> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "x-extension-origin": chrome.runtime.id,
+    },
+    body: JSON.stringify({
+      model: "claude-3-5-sonnet-latest",
+      max_tokens: 1024,
+      messages,
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`proxy returned ${response.status} ${body.slice(0, 200)}`);
+  }
+  const data = (await response.json()) as {
+    content?: Array<{ type: string; text?: string }>;
+  };
+  const text = Array.isArray(data.content)
+    ? data.content
+        .filter((b) => b && b.type === "text" && typeof b.text === "string")
+        .map((b) => b.text)
+        .join("\n")
+    : "";
+  if (!text) throw new Error("empty proxy response");
+  return text;
 }
 
 function isoNow(): string {
@@ -198,33 +247,9 @@ export default defineBackground(() => {
           }
           const url = validateProxyUrl(settings.proxyUrl);
           if (prompt.length > 8 * 1024) throw new Error("prompt too large");
-          const response = await fetch(url, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-api-key": settings.apiKey,
-              "anthropic-version": "2023-06-01",
-              "anthropic-dangerous-direct-browser-access": "true",
-              "x-extension-origin": chrome.runtime.id,
-            },
-            body: JSON.stringify({
-              model: "claude-3-5-sonnet-latest",
-              max_tokens: 1024,
-              messages: [{ role: "user", content: prompt }],
-            }),
-          });
-          if (!response.ok) {
-            const body = await response.text().catch(() => "");
-            throw new Error(`proxy returned ${response.status} ${body.slice(0, 200)}`);
-          }
-          const data = (await response.json()) as { content?: Array<{ type: string; text?: string }> };
-          const text = Array.isArray(data.content)
-            ? data.content
-                .filter((b) => b && b.type === "text" && typeof b.text === "string")
-                .map((b) => b.text)
-                .join("\n")
-            : "";
-          if (!text) throw new Error("empty proxy response");
+          const text = await runAnthropicRequest(settings.apiKey, url, [
+            { role: "user", content: prompt },
+          ]);
           sendResponse({ ok: true, content: text });
         } catch (err) {
           sendResponse({ ok: false, error: err instanceof Error ? err.message : "analyze failed" });
@@ -232,5 +257,57 @@ export default defineBackground(() => {
       })();
       return true;
     }
+    if (msg.type === ANALYZE_TURN) {
+      const payload = msg.payload as AnalyzeTurnRequest | undefined;
+      if (!payload || typeof payload !== "object") return;
+      if (typeof payload.sessionId !== "string") return;
+      if (typeof payload.userContent !== "string") return;
+      if (!Array.isArray(payload.refs)) return;
+      if (!Array.isArray(payload.history)) return;
+      (async () => {
+        const response: AnalyzeTurnResponse = await runAnalyzeTurn(payload);
+        sendResponse(response);
+      })();
+      return true;
+    }
   });
 });
+
+async function runAnalyzeTurn(req: AnalyzeTurnRequest): Promise<AnalyzeTurnResponse> {
+  try {
+    const stored = await chrome.storage.local.get("settings");
+    const settings = (stored.settings ?? {}) as { apiKey?: unknown; proxyUrl?: unknown };
+    if (typeof settings.apiKey !== "string" || !settings.apiKey) {
+      throw new Error("missing api key");
+    }
+    if (typeof settings.proxyUrl !== "string" || !settings.proxyUrl) {
+      throw new Error("missing proxy url");
+    }
+    const url = validateProxyUrl(settings.proxyUrl);
+
+    const allErrors = await getBuffer();
+    const lookup = new Map(allErrors.map((e) => [e.hash, e]));
+    const refs = req.refs
+      .filter((h) => typeof h === "string")
+      .map((h) => lookup.get(h))
+      .filter((e): e is ErrorEntry => Boolean(e));
+
+    const messages = buildChatMessages(
+      req.history.map((m) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        refs: m.refs,
+        timestamp: m.timestamp,
+      })),
+      refs,
+      req.userContent,
+      { maxHistoryTurns: 12, maxPromptChars: 6 * 1024 },
+    );
+
+    const text = await runAnthropicRequest(settings.apiKey, url, messages);
+    return { ok: true, content: text };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "analyze failed" };
+  }
+}

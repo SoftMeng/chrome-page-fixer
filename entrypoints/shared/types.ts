@@ -65,3 +65,25 @@ export interface BridgeMessage<T = ErrorEntry> {
 
 export const STORAGE_KEY = "errors";
 export const MAX_ERRORS = 200;
+
+export type ChatRole = "user" | "assistant";
+
+export interface ChatMessage {
+  id: string;
+  role: ChatRole;
+  content: string;
+  refs: string[];
+  timestamp: number;
+}
+
+export interface ChatSession {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  messages: ChatMessage[];
+  refs: string[];
+}
+
+export const CHAT_STORAGE_KEY = "chat_sessions";
+export const MAX_SESSIONS = 50;
+export const MAX_MESSAGES_PER_SESSION = 100;
