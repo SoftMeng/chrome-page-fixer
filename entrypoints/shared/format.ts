@@ -90,6 +90,10 @@ export function toReport(entries: ErrorEntry[]): string {
     lines.push(`  source: ${formatSource(e)}`);
     lines.push(`  stack: \`\`\`\n${e.stack ? sanitize(e.stack) : "(none)"}\n\`\`\``);
     lines.push(`  focused: ${e.focusedSelector || "(none)"}`);
+    if (e.triggerSelector || e.triggerElement) {
+      lines.push(`  trigger-selector: ${e.triggerSelector || "(none)"}`);
+      lines.push(`  trigger-element: ${e.triggerElement || "(none)"}`);
+    }
     if (idx < sorted.length - 1) lines.push("");
   });
 

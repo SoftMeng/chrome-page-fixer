@@ -106,9 +106,40 @@ interface SharedContext {
   frameId: string;
   isDev: EnvKind;
   appHint: string;
+  lastTrigger: Element | null;
+}
+
+function captureLastTrigger(ctx: SharedContext): void {
+  const record = (event: Event): void => {
+    const target = event.target;
+    if (target instanceof Element) ctx.lastTrigger = target;
+  };
+  for (const evt of ["click", "submit", "keydown"] as const) {
+    document.addEventListener(evt, record, { capture: true, passive: true });
+  }
 }
 
 function reportNetwork(ctx: SharedContext, kind: ErrorKind, message: string): void {
+  let triggerSelector: string | undefined;
+  let triggerElement: string | undefined;
+  if (ctx.lastTrigger) {
+    triggerSelector = buildSelector(ctx.lastTrigger) || undefined;
+    triggerElement = summarizeElement(ctx.lastTrigger) || undefined;
+  } else {
+    try {
+      const u = new URL(ctx.lastTrigger === null ? message : ctx.url);
+      if (u.origin !== window.location.origin) {
+        triggerSelector = "(cross-origin)";
+        triggerElement = "(cross-origin)";
+      } else {
+        triggerSelector = "(unrecorded)";
+        triggerElement = "(unrecorded)";
+      }
+    } catch {
+      triggerSelector = "(unrecorded)";
+      triggerElement = "(unrecorded)";
+    }
+  }
   post({
     hash: hashEntry("error", message, ctx.url, Date.now()),
     level: "error",
@@ -125,6 +156,8 @@ function reportNetwork(ctx: SharedContext, kind: ErrorKind, message: string): vo
     isDev: ctx.isDev,
     appHint: ctx.appHint,
     focusedSelector: buildSelector(document.activeElement) || undefined,
+    triggerSelector,
+    triggerElement,
   });
 }
 
@@ -203,8 +236,9 @@ export default defineContentScript({
     const tabId = `${host}:${window.location.port || ""}`;
     const frameId = String(window === window.top ? 0 : 1);
     const appHint = "";
-    const ctx: SharedContext = { url, pageTitle, route, viewport, tabId, frameId, isDev, appHint };
+    const ctx: SharedContext = { url, pageTitle, route, viewport, tabId, frameId, isDev, appHint, lastTrigger: null };
 
+    captureLastTrigger(ctx);
     installNetworkMonitor(ctx);
 
     for (const level of CONSOLE_METHODS) {

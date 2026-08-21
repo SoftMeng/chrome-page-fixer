@@ -55,6 +55,8 @@ export interface ErrorEntry {
   line?: number;
   column?: number;
   resourceType?: NetworkResourceType;
+  triggerSelector?: string;
+  triggerElement?: string;
 }
 
 export interface BridgeMessage<T = ErrorEntry> {
