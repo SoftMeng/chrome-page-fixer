@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 280" width="480" height="280" role="img" aria-label="Chrome Page Fixer Options preview">
+  <defs>
+    <style>
+      .bg { fill: #ffffff; }
+      .border { stroke: #e5e7eb; stroke-width: 1; fill: #ffffff; }
+      .title { font: 600 14px -apple-system, system-ui, sans-serif; fill: #1f2328; }
+      .meta { font: 12px -apple-system, system-ui, sans-serif; fill: #6b7280; }
+      .label { font: 12px -apple-system, system-ui, sans-serif; fill: #1f2328; }
+      .input { font: 12px ui-monospace, SF Mono, monospace; fill: #6b7280; }
+      .btn { fill: #ffffff; stroke: #e5e7eb; }
+    </style>
+  </defs>
+  <rect width="480" height="280" class="bg"/>
+  <text x="20" y="30" class="title">Chrome Page Fixer</text>
+  <text x="20" y="50" class="meta">配置 API Key 与代理；Key 仅存本地。</text>
+
+  <text x="20" y="92" class="label">API Key</text>
+  <rect x="20" y="100" width="440" height="32" rx="4" class="border"/>
+  <text x="30" y="120" class="input">PROXY_MANAGED</text>
+
+  <text x="20" y="156" class="label">Proxy URL</text>
+  <rect x="20" y="164" width="440" height="32" rx="4" class="border"/>
+  <text x="30" y="184" class="input">http://127.0.0.1:5000/v1/messages</text>
+
+  <text x="20" y="220" class="label">App Hint（项目根路径 / 关键目录）</text>
+  <rect x="20" y="228" width="440" height="32" rx="4" class="border"/>
+  <text x="30" y="248" class="input">e.g. /Users/me/work/yudao (frontend root)</text>
+</svg>

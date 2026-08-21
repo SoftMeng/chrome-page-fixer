@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 540 360" width="540" height="360" role="img" aria-label="AI envelope report preview">
+  <defs>
+    <style>
+      .bg { fill: #f6f8fa; }
+      .code { font: 11px ui-monospace, SF Mono, monospace; fill: #1f2328; }
+      .key { fill: #175cd3; }
+      .muted { fill: #6b7280; }
+      .err { fill: #d92d20; }
+      .warn { fill: #b54708; }
+      .line { stroke: #e5e7eb; stroke-width: 1; }
+    </style>
+  </defs>
+  <rect width="540" height="360" class="bg"/>
+  <rect x="0" y="0" width="540" height="360" fill="none" stroke="#e5e7eb"/>
+
+  <text x="14" y="22" class="code">=== CHROME PAGE FIXER REPORT v0.1.0 ===</text>
+  <text x="14" y="40" class="code">Captured-at: 2026-08-21T09:54:07.123Z</text>
+  <text x="14" y="58" class="code">Page: dict | http://192.168.31.8:3010/#/system/dict</text>
+  <text x="14" y="76" class="code">Route: #/system/dict</text>
+  <text x="14" y="94" class="code">Browser: 1440x900 | tab=192.168.31.8:3010 frame=0</text>
+  <text x="14" y="112" class="code">Env: intranet</text>
+  <text x="14" y="130" class="code">App-hint: /Users/me/work/yudao</text>
+  <text x="14" y="148" class="code">Errors: 1</text>
+  <text x="14" y="166" class="code">=== END HEADERS ===</text>
+
+  <line x1="14" y1="178" x2="526" y2="178" class="line"/>
+
+  <text x="14" y="196" class="code">[ERROR #1] <tspan class="key">kind</tspan>=<tspan class="muted">network</tspan> level=error at=2026-08-21T09:54:07</text>
+  <text x="14" y="214" class="code">  <tspan class="key">resource-type</tspan>: image</text>
+  <text x="14" y="232" class="code">  <tspan class="key">selector</tspan>: .dict-card .ant-card .avatar</text>
+  <text x="14" y="250" class="code">  <tspan class="key">element</tspan>: &lt;img alt="user avatar" class="avatar" ...&gt;</text>
+  <text x="14" y="268" class="code">  <tspan class="key">message</tspan>: ```</text>
+  <text x="14" y="286" class="code">GET http://test.yudao.iocoder.cn/.../avatar.png → 502</text>
+  <text x="14" y="304" class="code">```</text>
+  <text x="14" y="322" class="code">  source: <tspan class="muted">(resource-only)</tspan></text>
+  <text x="14" y="340" class="code">  focused: body</text>
+</svg>
