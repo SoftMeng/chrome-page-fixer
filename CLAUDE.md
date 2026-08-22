@@ -20,6 +20,14 @@ This file provides guidance to Claude Code in this repository.
 - **Post-MVP 阶段2 已交付**：
   - 第 4 个 Tool `inspect_element`：CSS selector → tag / id / class / 受限 attribute 白名单 / bounding rect / 可见性 / 前 3 层祖先 selector；**不**返回 `textContent` / `value` / `innerHTML`（隐私）
   - 桥接：background → content script（ISOLATED → MAIN world），`chrome.tabs.sendMessage` 1 秒超时；`:root` / `html` / `body` / `*` 被拒绝
+- **Post-MVP 阶段3 已交付（代码）**（Agent 框架）：
+  - 迁移到 **Vercel AI SDK**（`ai` v7 + `@ai-sdk/anthropic` v4 + `zod` v4）
+  - Tool loop 由 SDK `stopWhen: stepCountIs(5)` 接管
+  - Tool 定义改用 `tool({description, inputSchema: z.object({...}), execute})` —— schema强校验
+  - 一次性旧路径（ANALYZE）也走 SDK `generateText`
+  - 自研 `runAgentWithTools` / `ContentBlock` / `TOOL_REGISTRY` 已删除
+  - 代价：bundle background.js 26 kB → **400 kB**（+374 kB）—— 接受为「一次到位」换得 L2 决策层能力
+  - **状态**：代码完成（`feature/agent-migration` 分支，未 commit、未 e2e 验证）。回滚点 `v-pre-ai-sdk`（commit `5185555`）。
 
 ## 关键决策（每条必须追溯到 QA 段落）
 
@@ -33,12 +41,15 @@ This file provides guidance to Claude Code in this repository.
    出处：`docs/qa/chrome-error-capture-mcp-bridge.md` §2。
 5. **System Prompt 注入走 Anthropic Messages `system` 字段** — 与 `messages` 同级，不混入 user/assistant；内容独立文件 `entrypoints/shared/system-prompt.ts` 维护，每次会话固定。
    出处：Anthropic Messages API 文档（system 字段）。
+6. **Agent 框架选 Vercel AI SDK** — 跨 Provider 抽象、Tool Use 原生、zod 强校验；接受 bundle +374 kB 作为 L2 决策层能力的代价。
+   出处：`entrypoints/agent/provider.ts` / `entrypoints/agent/run.ts` / `entrypoints/agent/tools.ts`。
 
 ## 技术栈
 
 - Manifest V3 + WXT（脚手架）
 - TypeScript strict + `noUncheckedIndexedAccess`（Content Script、Background、Side Panel、Options）
 - React 18（Side Panel / Options UI）
+- **Vercel AI SDK**（`ai` v7 + `@ai-sdk/anthropic` v4 + `zod` v4）—— Agent loop 与 Tool Use
 - Anthropic Messages API（BYOK + Proxy URL；`x-api-key` + `anthropic-dangerous-direct-browser-access`）
 - Side Panel 作为主 UI 入口
 - chrome.storage.local 持久化（错误缓冲、会话、引用编号、设置）
@@ -62,10 +73,29 @@ This file provides guidance to Claude Code in this repository.
 │       ├── agent-safety.md
 │       └── privacy-and-consent.md
 └── entrypoints/
-    ├── background.ts               # SW：监听 + 调用 Anthropic
-    ├── capture-main.content.ts     # 主世界脚本（console / error / unhandledrejection）
-    ├── capture.content.ts          # 隔离世界脚本（postMessage → PAGE_ERROR）
+    ├── background.ts               # SW：监听 + 通过 Vercel AI SDK 调用 Anthropic
+    ├── capture-main.content.ts     # 主世界脚本（console / error / unhandledrejection / fetch 劫持 / DOM inspect）
+    ├── capture.content.ts          # 隔离世界脚本（postMessage → PAGE_ERROR / INSPECT_ELEMENT）
     ├── options/App.tsx             # BYOK / Proxy / App Hint 设置
+    ├── agent/                      # Vercel AI SDK 接入层（Post-MVP 阶段3）
+    │   ├── provider.ts             # createAnthropic({baseURL, apiKey, headers})
+    │   ├── run.ts                  # runAgentWithTools 包装 generateText + stopWhen
+    │   └── tools.ts                # 4 个 tool({parameters, execute}) 定义
+    ├── shared/                     # 跨 entrypoint 复用模块
+    │   ├── types.ts                # ErrorEntry / ChatSession 等
+    │   ├── messaging.ts            # PAGE_ERROR / ANALYZE / ANALYZE_TURN / INSPECT_ELEMENT_*
+    │   ├── storage.ts              # settings（apiKey / proxyUrl / appHint）
+    │   ├── storage-constants.ts
+    │   ├── chat-storage.ts         # 会话持久化
+    │   ├── chat-prompt.ts          # 多轮 messages 构建
+    │   ├── system-prompt.ts        # 独立维护的 System Prompt
+    │   ├── error-index.ts          # stable hash→#N 映射
+    │   ├── format.ts               # envelope / Markdown 输出
+    │   └── tools/                  # Tool 纯函数实现（与 schema 解耦）
+    │       ├── get-errors.ts
+    │       ├── get-error-by-index.ts
+    │       ├── search-errors.ts
+    │       └── inspect-element.ts
     └── sidepanel/
         ├── App.tsx                 # 3 Tab 容器
         ├── ChatPanel.tsx           # 对话面板
@@ -77,17 +107,6 @@ This file provides guidance to Claude Code in this repository.
         ├── main.tsx
         ├── styles.css              # 错误列表 / 历史样式
         └── chat-panel.css          # 对话面板样式
-
-    shared/
-    ├── types.ts                    # ErrorEntry / ChatSession 等
-    ├── messaging.ts                # PAGE_ERROR / ANALYZE / ANALYZE_TURN
-    ├── storage.ts                  # settings（apiKey / proxyUrl / appHint）
-    ├── storage-constants.ts
-    ├── chat-storage.ts             # 会话持久化
-    ├── chat-prompt.ts              # 多轮 messages 构建
-    ├── system-prompt.ts            # 独立维护的 System Prompt
-    ├── error-index.ts              # stable hash→#N 映射
-    └── format.ts                   # envelope / Markdown 输出
 ```
 
 ## 约束引用
@@ -126,9 +145,25 @@ This file provides guidance to Claude Code in this repository.
 
 - 单一职责：避免职责不清晰、越界、混合、命名混乱、引用混乱、归属不清晰、边界抽象、逻辑重复、异常静默处理；以正确性、可读性、可维护性、性能、安全为目标，不打补丁、不敷衍、不臆测、不留尾巴。
 - 整洁之道：文档与代码篇幅追求精炼有效；不敷衍也不过度设计，简洁高效。
+- 选型纪律：任何"换框架 / 换 Provider"决策前必须先验事实（npm 包大小、官方文档、bundle 实际数据），不接受第三方"推荐"作为结论。
+
+## 最近决策时间线
+
+| 阶段 | commit / tag | 决策 | 关键事实 |
+| --- | --- | --- | --- |
+| MVP 阶段 1–4 | `926e814` | scaffold + capture + BYOK + AI envelope | — |
+| MVP 收尾 | `043e8bc` | 多轮 AI 对话 + envelope 引用 | — |
+| Post-MVP 阶段1 | `5a7506a` | 网络错误补 DOM 上下文（fetch / XHR 劫持 + `triggerSelector`） | — |
+| Post-MVP 阶段2 | `5185555` / `v-pre-ai-sdk` | Anthropic Tool Use + 4 个只读 Tool（`get_errors` / `get_error_by_index` / `search_errors_by_message` / `inspect_element`） | 自研 `runAgentWithTools` 30 行 loop；Tool runner 5 轮上限 |
+| Post-MVP 阶段3 | `feature/agent-migration`（未 commit） | **迁移到 Vercel AI SDK**（`ai` v7 + `@ai-sdk/anthropic` v4 + `zod` v4） | bundle background.js 26 → **400 kB**（+374 kB）；自研 loop 删除；Tool 改用 `tool({inputSchema, execute})`；`stopWhen: stepCountIs(5)` |
+
+**当前状态**：
+- 分支：`feature/agent-migration`，未 commit / 未 push / 未 e2e 浏览器验证
+- 回滚点：`git reset --hard v-pre-ai-sdk` 可回到 commit `5185555`
+- 下一步动作：浏览器跑通 4 个 Tool + Tool loop 后 commit + tag `v-ai-sdk-migration` + merge 到 `develop`
 
 ## 重要注意事项
 
 - 不引用未经核验的具体评分、漏洞编号或维护者数据。
 - 不把社区贴文、第三方教程、模型生成内容当作官方事实。
-- 外部依赖版本变化（Chrome DevTools MCP / Rig / Anthropic 文档）需要在 `docs/qa/README.md` 变更日志中更新。
+- 外部依赖版本变化（Chrome DevTools MCP / Rig / Anthropic 文档 / Vercel AI SDK）需要在 `docs/qa/README.md` 变更日志中更新。

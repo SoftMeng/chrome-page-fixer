@@ -44,3 +44,32 @@
 
 - 最小采集与脱敏原则：`docs/qa/chrome-error-capture-mcp-bridge.md` §6。
 - 隐私与数据流边界：`docs/qa/in-browser-agent-extension-plan.md` §5。
+
+---
+
+## 各 Tool 的读取与脱敏细则（Post-MVP 阶段 3 补）
+
+### 4.1 `get_storage_snapshot`（本批加）
+
+- **来源**：当前活动 tab 的 `localStorage` / `sessionStorage`（**不**读扩展自身 storage；**不**读 cookie）
+- **风险等级**：**高**（token / session / 用户隐私）
+- **默认脱敏**：所有 value 返回 `***`；仅键名原样
+- **白名单开启**：用户在 Tool 输入的 `properties: ["key1","key2"]` 数组**逐键**点名要明文 → 该键值原样返回；未点名仍脱敏
+- **不实现 Cookie**：`chrome.cookies` API 需要 `cookies` 权限 + 跨域披露；**本批不做**
+- **Options UI 文案**：新增一行 "读取 localStorage / sessionStorage 需启用访问站点数据（默认已启用 host_permissions）"
+- **Tool 描述**：必须写明 "默认返回 `***`；要明文请用 properties 数组逐键点名"
+
+### 4.2 其它 Tool（已交付，细则补充）
+
+- `get_console_messages`：value / stack 截前 200 字符；**不**做内容脱敏（`console` 是开发者主动输出）
+- `get_network_log` / `get_resource_timing`：URL query 截前 200 字符；body **不**获取（webRequest MV3 限制）
+- `inspect_element` / `list_elements`：attribute 白名单（`ATTRIBUTE_WHITELIST`）+ text 截 20 字符；**不**返回 `value` / `textContent` / `innerHTML`
+- `get_errors` / `get_error_by_index`：返回扩展自有错误条目；**不**做内容脱敏，由用户审查 envelope 后上传
+
+### 4.3 待实现（**本批不做**）
+
+| Tool | 阻塞 |
+| --- | --- |
+| `get_cookies` | 需 `manifest.json` 加 `cookies` 权限 + 完整披露文案；进入下一阶段前补方案 |
+| `execute_js` / `click_element` / `type_text` | CLAUDE.md §关键决策 2 写操作 Tool 需 `agent-safety.md` 评审（域名白名单 + 二次确认 + 操作审计） |
+| `take_screenshot` | 需 `activeTab` 权限 + 隐私披露；UI 显示"是否离开本机"开关 |

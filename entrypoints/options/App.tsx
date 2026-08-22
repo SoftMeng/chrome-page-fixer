@@ -22,11 +22,11 @@ export function App() {
   async function onSave() {
     try {
       const trimmedKey = apiKey.trim();
-      const trimmedUrl = proxyUrl.trim();
+      const normalizedUrl = normalizeProxyUrl(proxyUrl.trim());
       const trimmedHint = appHint.trim();
-      if (trimmedUrl) {
+      if (normalizedUrl) {
         try {
-          const u = new URL(trimmedUrl);
+          const u = new URL(normalizedUrl);
           if (u.protocol !== "https:" && u.protocol !== "http:") {
             throw new Error("protocol");
           }
@@ -38,9 +38,12 @@ export function App() {
       }
       await setSettings({
         apiKey: trimmedKey || undefined,
-        proxyUrl: trimmedUrl || undefined,
+        proxyUrl: normalizedUrl || undefined,
         appHint: trimmedHint || undefined,
       });
+      if (normalizedUrl !== proxyUrl.trim()) {
+        setProxyUrl(normalizedUrl);
+      }
       setStatus("saved");
       setStatusMessage("已保存");
     } catch (err) {
@@ -70,10 +73,14 @@ export function App() {
           autoComplete="off"
           value={proxyUrl}
           onChange={(e) => setProxyUrl(e.target.value)}
-          placeholder="http://127.0.0.1:5000/v1/messages"
+          placeholder="http://127.0.0.1:5000/v1"
           style={inputStyle}
         />
       </label>
+      <p style={{ marginTop: 4, color: "#888", fontSize: 11, lineHeight: 1.4 }}>
+        填到 <code>/v1</code> 即可；SDK 会自动追加 <code>/messages</code>。
+        如果你的 URL 已经以 <code>/messages</code> 结尾，保存时会被自动剥掉（避免 <code>/v1/messages/messages</code> 重复）。
+      </p>
 
       <label style={labelStyle}>
         API Key
@@ -123,6 +130,13 @@ export function App() {
       </p>
     </main>
   );
+}
+
+function normalizeProxyUrl(raw: string): string {
+  const s = raw.replace(/\/+$/, "");
+  if (s.endsWith("/v1/messages")) return s.slice(0, -"/messages".length);
+  if (s.endsWith("/messages")) return s.slice(0, -"/messages".length);
+  return s;
 }
 
 const labelStyle: React.CSSProperties = { display: "block", marginTop: 12, fontSize: 13 };

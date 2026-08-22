@@ -154,6 +154,9 @@ A step-by-step checklist lives in `docs/qa/e2e-verification-phase1-4.md`. It cov
 - Multi-turn chat with stable `#N` references and session reuse by error hash.
 - Network errors now carry `triggerSelector` / `triggerElement` (the most recent click/submit/keydown target); cross-origin / unrecorded cases are labeled honestly.
 - Anthropic Tool Use: 3 read-only Tools (`get_errors` / `get_error_by_index` / `search_errors_by_message`) with a 5-round loop cap.
+- 4th Tool `inspect_element`: query a DOM element by CSS selector and return tag / id / class / attribute whitelist / bounding rect (no `textContent` / `value` / `innerHTML` for privacy).
+- Agent framework: migrated to **Vercel AI SDK v7** + `@ai-sdk/anthropic` v4 + `zod` v4. Tool loop is `stopWhen: stepCountIs(5)`. Self-rolled `runAgentWithTools` / `ContentBlock` / `TOOL_REGISTRY` removed.
+- Bundle impact: background.js 26 kB → 400 kB (+374 kB) — accepted once for "一次到位" — L2 decision-layer capabilities (description best practice, zod schema validation, `stopWhen` predicate, parallel tool calls).
 
 ### Planned
 

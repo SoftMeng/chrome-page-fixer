@@ -3,5 +3,5 @@ export const DEFAULT_SETTINGS: {
   proxyUrl: string;
 } = {
   apiKey: "PROXY_MANAGED",
-  proxyUrl: "http://127.0.0.1:5000/v1/messages",
+  proxyUrl: "http://127.0.0.1:5000/v1",
 };

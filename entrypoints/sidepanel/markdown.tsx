@@ -35,12 +35,49 @@ function renderInline(text: string): Inline[] {
   return parts;
 }
 
-interface Block {
-  type: "code" | "heading" | "li" | "p";
+type BlockType = "code" | "heading" | "li" | "p" | "table";
+
+interface BaseBlock {
+  type: BlockType;
+}
+
+interface HeadingBlock extends BaseBlock {
+  type: "heading";
   level?: number;
+  text: string;
+}
+
+interface CodeBlock extends BaseBlock {
+  type: "code";
+  lang?: string;
+  text: string;
+}
+
+interface ListBlock extends BaseBlock {
+  type: "li";
   ordered?: boolean;
   text: string;
-  lang?: string;
+}
+
+interface ParagraphBlock extends BaseBlock {
+  type: "p";
+  text: string;
+}
+
+interface TableBlock extends BaseBlock {
+  type: "table";
+  headers: string[];
+  rows: string[][];
+}
+
+type Block = HeadingBlock | CodeBlock | ListBlock | ParagraphBlock | TableBlock;
+
+const SEPARATOR_RE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/;
+const TABLE_ROW_RE = /^\s*\|.*\|\s*$/;
+
+function splitCells(row: string): string[] {
+  const trimmed = row.trim().replace(/^\|/, "").replace(/\|\s*$/, "");
+  return trimmed.split("|").map((c) => c.trim());
 }
 
 function parseBlocks(src: string): Block[] {
@@ -79,13 +116,24 @@ function parseBlocks(src: string): Block[] {
       i += 1;
       continue;
     }
+    if (TABLE_ROW_RE.test(line) && i + 1 < lines.length && SEPARATOR_RE.test(lines[i + 1] ?? "")) {
+      const headers = splitCells(line);
+      const rows: string[][] = [];
+      i += 2;
+      while (i < lines.length && TABLE_ROW_RE.test(lines[i] ?? "")) {
+        rows.push(splitCells(lines[i] ?? ""));
+        i += 1;
+      }
+      blocks.push({ type: "table", headers, rows });
+      continue;
+    }
     if (line.trim() === "") {
       i += 1;
       continue;
     }
     const buf: string[] = [line];
     i += 1;
-    while (i < lines.length && (lines[i] ?? "").trim() !== "" && !/^(#{1,4}\s|```|\s*[-*]\s|\s*\d+[.)]\s)/.test(lines[i] ?? "")) {
+    while (i < lines.length && (lines[i] ?? "").trim() !== "" && !/^(#{1,4}\s|```|\s*[-*]\s|\s*\d+[.)]\s|\s*\|)/.test(lines[i] ?? "")) {
       buf.push(lines[i] ?? "");
       i += 1;
     }
@@ -130,6 +178,27 @@ export function Markdown({ source }: { source: string }): ReactNode {
     } else if (b.type === "heading") {
       const Tag = (`h${Math.min((b.level ?? 2) + 2, 6)}`) as "h3" | "h4" | "h5" | "h6";
       out.push(<Tag key={`h${key++}`}>{renderInline(b.text)}</Tag>);
+    } else if (b.type === "table") {
+      out.push(
+        <table key={`t${key++}`}>
+          <thead>
+            <tr>
+              {b.headers.map((h, idx) => (
+                <th key={idx}>{renderInline(h)}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {b.rows.map((row, ridx) => (
+              <tr key={ridx}>
+                {row.map((cell, cidx) => (
+                  <td key={cidx}>{renderInline(cell)}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>,
+      );
     } else {
       out.push(<p key={`p${key++}`}>{renderInline(b.text)}</p>);
     }

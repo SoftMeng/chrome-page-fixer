@@ -22,7 +22,7 @@ function formatSource(e: ErrorEntry): string {
   return "(none)";
 }
 
-function envelopeForRefs(refs: ErrorEntry[]): string {
+export function envelopeForRefs(refs: ErrorEntry[]): string {
   if (refs.length === 0) return "";
   const first = refs[0];
   const head = first

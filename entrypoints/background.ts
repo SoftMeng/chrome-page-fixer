@@ -1,18 +1,45 @@
 import {
   ANALYZE,
   ANALYZE_TURN,
+  CONSOLE_LOG_RECEIVED,
+  LIST_ELEMENTS_REPLY,
+  PAGE_CONTEXT,
   PAGE_ERROR,
   type AnalyzeTurnRequest,
   type AnalyzeTurnResponse,
 } from "./shared/messaging";
-import { buildChatMessages } from "./shared/chat-prompt";
 import { SYSTEM_PROMPT } from "./shared/system-prompt";
 import { getSettings } from "./shared/storage";
-import { TOOLS } from "./shared/tool-schema";
-import { TOOL_REGISTRY, type ToolContext, type ToolResult } from "./shared/tool-registry";
 import { ensureIndexNumbers } from "./shared/error-index";
-import { INSPECT_ELEMENT, INSPECT_ELEMENT_REPLY } from "./shared/messaging";
-import type { InspectElementInput, InspectElementResult } from "./shared/tools/inspect-element";
+import {
+  INSPECT_ELEMENT,
+  INSPECT_ELEMENT_REPLY,
+  LIST_ELEMENTS,
+  LIST_RESOURCE_TIMING,
+  LIST_RESOURCE_TIMING_REPLY,
+  GET_NAVIGATION_TIMING,
+  GET_NAVIGATION_TIMING_REPLY,
+  GET_COMPUTED_STYLE,
+  GET_COMPUTED_STYLE_REPLY,
+  GET_STORAGE,
+  GET_STORAGE_REPLY,
+  GET_EVENT_LISTENERS,
+  GET_EVENT_LISTENERS_REPLY,
+  GET_PAGE_DOM_HTML,
+  GET_PAGE_DOM_HTML_REPLY,
+} from "./shared/messaging";
+import type { InspectElementResult } from "./shared/tools/inspect-element";
+import type { ListElementsResult } from "./shared/tools/list-elements";
+import { runAgentWithTools } from "./agent/run";
+import { createAgentProvider } from "./agent/provider";
+import type { ToolContext } from "./agent/tools";
+import {
+  getPageContext,
+  recordPageContext,
+} from "./shared/page-tracker";
+import { recordConsoleEntry } from "./shared/console-buffer";
+import type { ConsoleLevel } from "./shared/console-buffer";
+import { recordNetworkEntry } from "./shared/network-buffer";
 import {
   MAX_ERRORS,
   STORAGE_KEY,
@@ -20,7 +47,6 @@ import {
   type NetworkResourceType,
 } from "./shared/types";
 
-const TOOL_LOOP_MAX_ROUNDS = 5;
 const INSPECT_TIMEOUT_MS = 1000;
 
 interface PendingInspect {
@@ -56,6 +82,297 @@ async function callInspectElement(selector: string): Promise<InspectElementResul
           clearTimeout(p.timer);
           pendingInspects.delete(requestId);
           resolve({ selector, found: false, error: e });
+        }
+      });
+  });
+}
+
+interface PendingList {
+  resolve: (value: ListElementsResult) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+const pendingLists = new Map<string, PendingList>();
+
+interface ResourceTimingItem {
+  name: string;
+  initiatorType: string;
+  durationMs: number;
+  transferSize: number;
+  startTime: number;
+  responseEnd: number;
+}
+interface PendingTiming {
+  resolve: (value: ResourceTimingItem[]) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+const pendingTimings = new Map<string, PendingTiming>();
+
+type NavigationTimingResult = import("./shared/tools/get-navigation-timing").NavigationTimingResult;
+interface PendingNavigationTiming {
+  resolve: (value: NavigationTimingResult) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+const pendingNavTimings = new Map<string, PendingNavigationTiming>();
+
+interface GetComputedStyleResult {
+  selector: string;
+  found: boolean;
+  styles: Record<string, string>;
+  error?: string;
+}
+interface PendingStyle {
+  resolve: (value: GetComputedStyleResult) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+const pendingStyles = new Map<string, PendingStyle>();
+
+interface GetStorageSnapshotResult {
+  scope: "local" | "session";
+  totalKeys: number;
+  includedKeys: number;
+  redactedKeys: number;
+  entries: Array<{ key: string; value: string }>;
+  error?: string;
+}
+interface PendingStorage {
+  resolve: (value: GetStorageSnapshotResult) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+const pendingStorages = new Map<string, PendingStorage>();
+
+interface GetEventListenersResult {
+  selector: string;
+  found: boolean;
+  inline: Array<{ event: string; handler: string }>;
+  capturedTriggers: Array<{ event: string; timestamp: number }>;
+  limitations: string[];
+  error?: string;
+}
+interface PendingEventListeners {
+  resolve: (value: GetEventListenersResult) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+const pendingEventListeners = new Map<string, PendingEventListeners>();
+
+interface GetPageDomHtmlResult {
+  url: string;
+  totalLength: number;
+  truncated: boolean;
+  html: string;
+  note: string;
+  error?: string;
+}
+interface PendingPageDomHtml {
+  resolve: (value: GetPageDomHtmlResult) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+const pendingPageDomHtmls = new Map<string, PendingPageDomHtml>();
+
+async function callGetPageDomHtml(
+  maxLength: number | undefined,
+): Promise<GetPageDomHtmlResult> {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tab = tabs[0];
+  if (!tab || typeof tab.id !== "number") {
+    return {
+      url: "",
+      totalLength: 0,
+      truncated: false,
+      html: "",
+      note: "",
+      error: "no active tab",
+    };
+  }
+  const requestId = genRequestId();
+  return new Promise<GetPageDomHtmlResult>((resolve) => {
+    const timer = setTimeout(() => {
+      pendingPageDomHtmls.delete(requestId);
+      resolve({ url: "", totalLength: 0, truncated: false, html: "", note: "", error: "dom html timeout" });
+    }, INSPECT_TIMEOUT_MS);
+    pendingPageDomHtmls.set(requestId, { resolve, timer });
+    chrome.tabs
+      .sendMessage(tab.id as number, { type: GET_PAGE_DOM_HTML, payload: { requestId, maxLength } })
+      .catch((err: unknown) => {
+        const e = err instanceof Error ? err.message : "sendMessage failed";
+        const p = pendingPageDomHtmls.get(requestId);
+        if (p) {
+          clearTimeout(p.timer);
+          pendingPageDomHtmls.delete(requestId);
+          resolve({ url: "", totalLength: 0, truncated: false, html: "", note: "", error: e });
+        }
+      });
+  });
+}
+
+async function callGetEventListeners(
+  selector: string,
+  eventTypes: string[] | undefined,
+): Promise<GetEventListenersResult> {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tab = tabs[0];
+  if (!tab || typeof tab.id !== "number") {
+    return { selector, found: false, inline: [], capturedTriggers: [], limitations: [], error: "no active tab" };
+  }
+  const requestId = genRequestId();
+  return new Promise<GetEventListenersResult>((resolve) => {
+    const timer = setTimeout(() => {
+      pendingEventListeners.delete(requestId);
+      resolve({ selector, found: false, inline: [], capturedTriggers: [], limitations: [], error: "event listeners timeout" });
+    }, INSPECT_TIMEOUT_MS);
+    pendingEventListeners.set(requestId, { resolve, timer });
+    chrome.tabs
+      .sendMessage(tab.id as number, { type: GET_EVENT_LISTENERS, payload: { selector, requestId, eventTypes } })
+      .catch((err: unknown) => {
+        const e = err instanceof Error ? err.message : "sendMessage failed";
+        const p = pendingEventListeners.get(requestId);
+        if (p) {
+          clearTimeout(p.timer);
+          pendingEventListeners.delete(requestId);
+          resolve({ selector, found: false, inline: [], capturedTriggers: [], limitations: [], error: e });
+        }
+      });
+  });
+}
+
+async function callGetStorage(
+  scope: "local" | "session" | undefined,
+  properties: string[] | undefined,
+): Promise<GetStorageSnapshotResult> {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tab = tabs[0];
+  if (!tab || typeof tab.id !== "number") {
+    return { scope: scope ?? "local", totalKeys: 0, includedKeys: 0, redactedKeys: 0, entries: [] };
+  }
+  const requestId = genRequestId();
+  return new Promise<GetStorageSnapshotResult>((resolve) => {
+    const timer = setTimeout(() => {
+      pendingStorages.delete(requestId);
+      resolve({ scope: scope ?? "local", totalKeys: 0, includedKeys: 0, redactedKeys: 0, entries: [], error: "storage timeout" });
+    }, INSPECT_TIMEOUT_MS);
+    pendingStorages.set(requestId, { resolve, timer });
+    chrome.tabs
+      .sendMessage(tab.id as number, { type: GET_STORAGE, payload: { requestId, scope, properties } })
+      .catch((err: unknown) => {
+        const e = err instanceof Error ? err.message : "sendMessage failed";
+        const p = pendingStorages.get(requestId);
+        if (p) {
+          clearTimeout(p.timer);
+          pendingStorages.delete(requestId);
+          resolve({ scope: scope ?? "local", totalKeys: 0, includedKeys: 0, redactedKeys: 0, entries: [], error: e } as GetStorageSnapshotResult);
+        }
+      });
+  });
+}
+
+async function callGetComputedStyle(
+  selector: string,
+  properties?: string[],
+): Promise<GetComputedStyleResult> {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tab = tabs[0];
+  if (!tab || typeof tab.id !== "number") {
+    return { selector, found: false, styles: {}, error: "no active tab" };
+  }
+  const requestId = genRequestId();
+  return new Promise<GetComputedStyleResult>((resolve) => {
+    const timer = setTimeout(() => {
+      pendingStyles.delete(requestId);
+      resolve({ selector, found: false, styles: {}, error: "style timeout" });
+    }, INSPECT_TIMEOUT_MS);
+    pendingStyles.set(requestId, { resolve, timer });
+    chrome.tabs
+      .sendMessage(tab.id as number, { type: GET_COMPUTED_STYLE, payload: { selector, requestId, properties } })
+      .catch((err: unknown) => {
+        const e = err instanceof Error ? err.message : "sendMessage failed";
+        const p = pendingStyles.get(requestId);
+        if (p) {
+          clearTimeout(p.timer);
+          pendingStyles.delete(requestId);
+          resolve({ selector, found: false, styles: {}, error: e });
+        }
+      });
+  });
+}
+
+async function callListResourceTiming(): Promise<ResourceTimingItem[]> {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tab = tabs[0];
+  if (!tab || typeof tab.id !== "number") return [];
+  const requestId = genRequestId();
+  return new Promise<ResourceTimingItem[]>((resolve) => {
+    const timer = setTimeout(() => {
+      pendingTimings.delete(requestId);
+      resolve([]);
+    }, INSPECT_TIMEOUT_MS);
+    pendingTimings.set(requestId, { resolve, timer });
+    chrome.tabs
+      .sendMessage(tab.id as number, { type: LIST_RESOURCE_TIMING, payload: { requestId } })
+      .catch(() => {
+        const p = pendingTimings.get(requestId);
+        if (p) {
+          clearTimeout(p.timer);
+          pendingTimings.delete(requestId);
+          resolve([]);
+        }
+      });
+  });
+}
+
+async function callGetNavigationTiming(): Promise<NavigationTimingResult> {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tab = tabs[0];
+  if (!tab || typeof tab.id !== "number") {
+    return { available: false, error: "no active tab" };
+  }
+  const requestId = genRequestId();
+  return new Promise<NavigationTimingResult>((resolve) => {
+    const timer = setTimeout(() => {
+      pendingNavTimings.delete(requestId);
+      resolve({ available: false, error: "timeout" });
+    }, INSPECT_TIMEOUT_MS);
+    pendingNavTimings.set(requestId, { resolve, timer });
+    chrome.tabs
+      .sendMessage(tab.id as number, { type: GET_NAVIGATION_TIMING, payload: { requestId } })
+      .catch(() => {
+        const p = pendingNavTimings.get(requestId);
+        if (p) {
+          clearTimeout(p.timer);
+          pendingNavTimings.delete(requestId);
+          resolve({ available: false, error: "send failed" });
+        }
+      });
+  });
+}
+
+async function callListElements(
+  selector: string | undefined,
+  limit?: number,
+  depth?: number,
+  mode?: "flat" | "tree",
+): Promise<ListElementsResult> {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tab = tabs[0];
+  if (!tab || typeof tab.id !== "number") {
+    return { selector: selector ?? "", total: 0, returned: 0, truncated: false, mode: "flat", depth: 1, items: [], error: "no active tab" };
+  }
+  const requestId = genRequestId();
+  const effectiveMode: "flat" | "tree" = mode ?? "flat";
+  const effectiveDepth = depth ?? 1;
+  return new Promise<ListElementsResult>((resolve) => {
+    const timer = setTimeout(() => {
+      pendingLists.delete(requestId);
+      resolve({ selector: selector ?? "", total: 0, returned: 0, truncated: false, mode: effectiveMode, depth: effectiveDepth, items: [], error: "list timeout" });
+    }, INSPECT_TIMEOUT_MS);
+    pendingLists.set(requestId, { resolve, timer });
+    chrome.tabs
+      .sendMessage(tab.id as number, { type: LIST_ELEMENTS, payload: { selector, requestId, limit, depth, mode } })
+      .catch((err: unknown) => {
+        const e = err instanceof Error ? err.message : "sendMessage failed";
+        const p = pendingLists.get(requestId);
+        if (p) {
+          clearTimeout(p.timer);
+          pendingLists.delete(requestId);
+          resolve({ selector: selector ?? "", total: 0, returned: 0, truncated: false, mode: effectiveMode, depth: effectiveDepth, items: [], error: e });
         }
       });
   });
@@ -113,17 +430,7 @@ function validateProxyUrl(raw: string): URL {
 
 interface AnthropicMessage {
   role: "user" | "assistant";
-  content: string | ContentBlock[];
-}
-
-type ContentBlock =
-  | { type: "text"; text: string }
-  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
-  | { type: "tool_result"; tool_use_id: string; content: string };
-
-interface AnthropicResponse {
-  content: ContentBlock[];
-  stop_reason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | string | null;
+  content: string;
 }
 
 async function runAnthropicRequest(
@@ -131,33 +438,11 @@ async function runAnthropicRequest(
   url: URL,
   messages: AnthropicMessage[],
   system: string = SYSTEM_PROMPT,
-  tools: typeof TOOLS | null = null,
-): Promise<AnthropicResponse> {
-  const body: Record<string, unknown> = {
-    model: "claude-3-5-sonnet-latest",
-    max_tokens: 1024,
-    system,
-    messages,
-  };
-  if (tools) body.tools = tools;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-      "x-extension-origin": chrome.runtime.id,
-    },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`proxy returned ${response.status} ${body.slice(0, 200)}`);
-  }
-  const data = (await response.json()) as { content?: ContentBlock[]; stop_reason?: string };
-  const content = Array.isArray(data.content) ? data.content : [];
-  return { content, stop_reason: data.stop_reason ?? "end_turn" };
+): Promise<string> {
+  const { model } = createAgentProvider(url.toString(), apiKey);
+  const { generateText } = await import("ai");
+  const result = await generateText({ model, system, messages });
+  return result.text;
 }
 
 function isoNow(): string {
@@ -186,6 +471,25 @@ async function pushNetworkError(entry: ErrorEntry): Promise<void> {
   if (current.some((e) => e.hash === entry.hash)) return;
   const next = [...current, entry];
   if (next.length > MAX_ERRORS) next.splice(0, next.length - MAX_ERRORS);
+  await persist(next);
+}
+
+async function enrichFromTabContext(entry: ErrorEntry, tabId: number): Promise<void> {
+  const ctx = getPageContext(tabId);
+  if (!ctx) return;
+  const current = await getBuffer();
+  const idx = current.findIndex((e) => e.hash === entry.hash);
+  if (idx === -1) return;
+  const target = current[idx];
+  if (!target) return;
+  const enriched: ErrorEntry = {
+    ...target,
+    url: ctx.url,
+    pageTitle: ctx.title,
+    route: ctx.route,
+  };
+  const next = [...current];
+  next[idx] = enriched;
   await persist(next);
 }
 
@@ -222,7 +526,16 @@ function installNetworkListeners(): void {
       };
       (entry as ErrorEntry & { resourceType?: NetworkResourceType }).resourceType = resourceType;
       console.log("[wr.onResponseStarted] pushing", entry);
-      void pushNetworkError(entry);
+      void pushNetworkError(entry).then(() => enrichFromTabContext(entry, details.tabId));
+      recordNetworkEntry({
+        url: details.url,
+        method: details.method,
+        status,
+        kind: "network",
+        durationMs: details.timeStamp ? Math.max(0, Date.now() - details.timeStamp) : 0,
+        timestamp: Date.now(),
+        initiator: details.initiator || undefined,
+      });
     },
     { urls: ["<all_urls>"] },
   );
@@ -329,6 +642,122 @@ export default defineBackground(() => {
       }
       return false;
     }
+    if (msg.type === LIST_ELEMENTS_REPLY) {
+      const payload = msg.payload as { requestId?: string; result?: ListElementsResult } | undefined;
+      if (!payload || typeof payload.requestId !== "string") return;
+      const p = pendingLists.get(payload.requestId);
+      if (p) {
+        clearTimeout(p.timer);
+        pendingLists.delete(payload.requestId);
+        const result = payload.result && typeof payload.result === "object"
+          ? payload.result
+          : { selector: "", total: 0, returned: 0, truncated: false, mode: "flat" as const, depth: 1, items: [], error: "bad result" };
+        p.resolve(result);
+      }
+      return false;
+    }
+    if (msg.type === CONSOLE_LOG_RECEIVED) {
+      const payload = msg.payload as { level?: string; message?: string; url?: string; timestamp?: number; stack?: string } | undefined;
+      if (!payload || typeof payload.level !== "string" || typeof payload.message !== "string" || typeof payload.timestamp !== "number" || typeof payload.url !== "string") return;
+      recordConsoleEntry({
+        level: payload.level as ConsoleLevel,
+        message: payload.message,
+        url: payload.url,
+        timestamp: payload.timestamp,
+        stack: typeof payload.stack === "string" ? payload.stack : undefined,
+      });
+      return false;
+    }
+    if (msg.type === LIST_RESOURCE_TIMING_REPLY) {
+      const payload = msg.payload as { requestId?: string; items?: unknown } | undefined;
+      if (!payload || typeof payload.requestId !== "string") return;
+      const p = pendingTimings.get(payload.requestId);
+      if (p) {
+        clearTimeout(p.timer);
+        pendingTimings.delete(payload.requestId);
+        const items = Array.isArray(payload.items) ? payload.items : [];
+        p.resolve(items as ResourceTimingItem[]);
+      }
+      return false;
+    }
+    if (msg.type === GET_NAVIGATION_TIMING_REPLY) {
+      const payload = msg.payload as { requestId?: string; result?: NavigationTimingResult } | undefined;
+      if (!payload || typeof payload.requestId !== "string") return;
+      const p = pendingNavTimings.get(payload.requestId);
+      if (p) {
+        clearTimeout(p.timer);
+        pendingNavTimings.delete(payload.requestId);
+        const result = payload.result && typeof payload.result === "object"
+          ? payload.result
+          : { available: false as const, error: "bad result" };
+        p.resolve(result);
+      }
+      return false;
+    }
+    if (msg.type === GET_COMPUTED_STYLE_REPLY) {
+      const payload = msg.payload as { requestId?: string; result?: GetComputedStyleResult } | undefined;
+      if (!payload || typeof payload.requestId !== "string") return;
+      const p = pendingStyles.get(payload.requestId);
+      if (p) {
+        clearTimeout(p.timer);
+        pendingStyles.delete(payload.requestId);
+        const result = payload.result && typeof payload.result === "object"
+          ? payload.result
+          : { selector: "", found: false, styles: {}, error: "bad result" };
+        p.resolve(result);
+      }
+      return false;
+    }
+    if (msg.type === GET_STORAGE_REPLY) {
+      const payload = msg.payload as { requestId?: string; result?: GetStorageSnapshotResult } | undefined;
+      if (!payload || typeof payload.requestId !== "string") return;
+      const p = pendingStorages.get(payload.requestId);
+      if (p) {
+        clearTimeout(p.timer);
+        pendingStorages.delete(payload.requestId);
+        const result = payload.result && typeof payload.result === "object"
+          ? payload.result
+          : { scope: "local" as const, totalKeys: 0, includedKeys: 0, redactedKeys: 0, entries: [], error: "bad result" };
+        p.resolve(result);
+      }
+      return false;
+    }
+    if (msg.type === GET_EVENT_LISTENERS_REPLY) {
+      const payload = msg.payload as { requestId?: string; result?: GetEventListenersResult } | undefined;
+      if (!payload || typeof payload.requestId !== "string") return;
+      const p = pendingEventListeners.get(payload.requestId);
+      if (p) {
+        clearTimeout(p.timer);
+        pendingEventListeners.delete(payload.requestId);
+        const result = payload.result && typeof payload.result === "object"
+          ? payload.result
+          : { selector: "", found: false, inline: [], capturedTriggers: [], limitations: [], error: "bad result" };
+        p.resolve(result);
+      }
+      return false;
+    }
+    if (msg.type === GET_PAGE_DOM_HTML_REPLY) {
+      const payload = msg.payload as { requestId?: string; result?: GetPageDomHtmlResult } | undefined;
+      if (!payload || typeof payload.requestId !== "string") return;
+      const p = pendingPageDomHtmls.get(payload.requestId);
+      if (p) {
+        clearTimeout(p.timer);
+        pendingPageDomHtmls.delete(payload.requestId);
+        const result = payload.result && typeof payload.result === "object"
+          ? payload.result
+          : { url: "", totalLength: 0, truncated: false, html: "", note: "", error: "bad result" };
+        p.resolve(result);
+      }
+      return false;
+    }
+    if (msg.type === PAGE_CONTEXT) {
+      const payload = msg.payload as { url?: string; title?: string; route?: string } | undefined;
+      const tabId = _sender?.tab?.id;
+      if (typeof tabId === "number" && payload && typeof payload.url === "string" && typeof payload.title === "string" && typeof payload.route === "string") {
+        recordPageContext(tabId, { url: payload.url, title: payload.title, route: payload.route });
+      }
+      return false;
+    }
   });
 });
 
@@ -337,7 +766,7 @@ async function runAnalyzeTurn(req: AnalyzeTurnRequest): Promise<AnalyzeTurnRespo
     const settings = await getSettings();
     if (!settings.apiKey) throw new Error("missing api key");
     if (!settings.proxyUrl) throw new Error("missing proxy url");
-    const url = validateProxyUrl(settings.proxyUrl);
+    validateProxyUrl(settings.proxyUrl);
 
     const allErrors = await getBuffer();
     const lookup = new Map(allErrors.map((e) => [e.hash, e]));
@@ -346,22 +775,25 @@ async function runAnalyzeTurn(req: AnalyzeTurnRequest): Promise<AnalyzeTurnRespo
       .map((h) => lookup.get(h))
       .filter((e): e is ErrorEntry => Boolean(e));
 
-    const messages = buildChatMessages(
-      req.history.map((m) => ({
+    const ctx = await buildToolContext(refs.map((e) => e.hash));
+    const outcome = await runAgentWithTools({
+      proxyUrl: settings.proxyUrl,
+      apiKey: settings.apiKey,
+      system: SYSTEM_PROMPT,
+      history: req.history.map((m) => ({
         id: m.id,
         role: m.role,
         content: m.content,
         refs: m.refs,
         timestamp: m.timestamp,
       })),
+      userContent: req.userContent,
       refs,
-      req.userContent,
-      { maxHistoryTurns: 12, maxPromptChars: 6 * 1024 },
-    );
-
-    const ctx = await buildToolContext(refs.map((e) => e.hash));
-    const text = await runAgentWithTools(settings.apiKey, url, messages, ctx);
-    return { ok: true, content: text };
+      ctx,
+      maxSteps: 5,
+    });
+    if (!outcome.ok) return { ok: false, error: outcome.error };
+    return { ok: true, content: outcome.content };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "analyze failed" };
   }
@@ -373,54 +805,19 @@ async function buildToolContext(refHashes: string[]): Promise<ToolContext> {
   return {
     buffer: allErrors,
     hashToNumber: ensured,
-    inspectElement: (input: InspectElementInput) => callInspectElement(input.selector),
+    inspectElement: (input) => callInspectElement(input.selector),
+    listElements: (input) =>
+      callListElements(input.selector, input.limit, input.depth, input.mode),
+    getComputedStyle: (input) => callGetComputedStyle(input.selector, input.properties),
+    getStorage: (input) => callGetStorage(input.scope, input.properties),
+    getEventListeners: (input) => callGetEventListeners(input.selector, input.eventTypes),
+    getPageDomHtml: (input) => callGetPageDomHtml(input.maxLength),
+    readResourceTiming: () => callListResourceTiming(),
+    getNavigationTiming: () => callGetNavigationTiming(),
   };
 }
 
-async function runAgentWithTools(
-  apiKey: string,
-  url: URL,
-  initialMessages: AnthropicMessage[],
-  ctx: ToolContext,
-): Promise<string> {
-  const messages: AnthropicMessage[] = [...initialMessages];
-  let finalText = "";
-
-  for (let round = 0; round < TOOL_LOOP_MAX_ROUNDS; round += 1) {
-    const resp = await runAnthropicRequest(apiKey, url, messages, SYSTEM_PROMPT, TOOLS);
-
-    if (resp.stop_reason === "tool_use") {
-      const toolUseBlocks = resp.content.filter(
-        (b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use",
-      );
-      const toolResults: ContentBlock[] = toolUseBlocks.map((use) => {
-        const def = TOOL_REGISTRY[use.name];
-        const payload = def ? def.run(ctx, use.input ?? {}) : null;
-        return {
-          type: "tool_result",
-          tool_use_id: use.id,
-          content: serializeToolResult(payload),
-        };
-      });
-      messages.push({ role: "assistant", content: resp.content });
-      messages.push({ role: "user", content: toolResults });
-      continue;
-    }
-
-    finalText = resp.content
-      .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
-      .map((b) => b.text)
-      .join("\n");
-    break;
-  }
-
-  if (!finalText) {
-    finalText = "[agent reached tool loop limit without final answer]";
-  }
-  return finalText;
-}
-
-function serializeToolResult(value: ToolResult): string {
+function serializeToolResult(value: unknown): string {
   if (value === null || value === undefined) return "null";
   if (typeof value === "string") return value;
   try {
