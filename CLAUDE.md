@@ -13,7 +13,7 @@ This file provides guidance to Claude Code in this repository.
   - 多轮 AI 对话（chrome.storage.local 持久化、stable #N 引用、askAbout 按 hash 复用会话）
   - System Prompt 独立维护，注入 Anthropic Messages `system` 字段
   - BYOK + Proxy URL（Anthropic 协议）
-- **Post-MVP 候选**：网络错误补 DOM 上下文（劫持 content script fetch/XHR）、Anthropic Tool Use（5–8 个只读 Tool）、写操作 Tool（域名白名单 + 二次确认）
+- **Post-MVP 候选**：网络错误补 DOM 上下文（劫持 content script fetch/XHR）、Anthropic Tool Use、写操作 Tool（域名白名单 + 二次确认）
 - **Post-MVP 阶段1 已交付**：
   - DOM 上下文：网络错误带 `triggerSelector` / `triggerElement`（跨域 / 未记录诚实标注）
   - Anthropic Tool Use：3 个只读 Tool（`get_errors` / `get_error_by_index` / `search_errors_by_message`），tool runner 硬上限 5 轮
@@ -26,8 +26,11 @@ This file provides guidance to Claude Code in this repository.
   - Tool 定义改用 `tool({description, inputSchema: z.object({...}), execute})` —— schema强校验
   - 一次性旧路径（ANALYZE）也走 SDK `generateText`
   - 自研 `runAgentWithTools` / `ContentBlock` / `TOOL_REGISTRY` 已删除
-  - 代价：bundle background.js 26 kB → **400 kB**（+374 kB）—— 接受为「一次到位」换得 L2 决策层能力
-  - **状态**：代码完成（`feature/agent-migration` 分支，未 commit、未 e2e 验证）。回滚点 `v-pre-ai-sdk`（commit `5185555`）。
+  - 代价：bundle background.js 26 kB → **413 kB**（+387 kB）—— 接受为「一次到位」换得 L2 决策层能力
+- **Post-MVP 阶段4 已交付**（Tool 扩到 12 个 + prompt 修复）：
+  - 新增 8 个只读 Tool：`list_elements` / `get_console_messages` / `get_network_log` / `get_resource_timing` / `get_computed_style` / `get_storage_snapshot` / `get_event_listeners` / `get_page_dom_html` / `get_navigation_timing`（`get_event_listeners` 用启发式，不识别 `addEventListener` / 框架虚拟事件）
+  - system-prompt 重写：三角循环心智模型 + 12-Tool 能力地图 + "envelope 和 Tool 是并列数据源，按用户问题走，不先 envelope 后 Tool"
+  - **状态**：5 commit 已 push 到 `feature/agent-migration`，待 e2e（`docs/qa/agent-e2e-checklist.md` 23 场景）验证后打 tag `v-ai-sdk-migration` + PR 合 develop
 
 ## 关键决策（每条必须追溯到 QA 段落）
 
@@ -155,12 +158,13 @@ This file provides guidance to Claude Code in this repository.
 | MVP 收尾 | `043e8bc` | 多轮 AI 对话 + envelope 引用 | — |
 | Post-MVP 阶段1 | `5a7506a` | 网络错误补 DOM 上下文（fetch / XHR 劫持 + `triggerSelector`） | — |
 | Post-MVP 阶段2 | `5185555` / `v-pre-ai-sdk` | Anthropic Tool Use + 4 个只读 Tool（`get_errors` / `get_error_by_index` / `search_errors_by_message` / `inspect_element`） | 自研 `runAgentWithTools` 30 行 loop；Tool runner 5 轮上限 |
-| Post-MVP 阶段3 | `feature/agent-migration`（未 commit） | **迁移到 Vercel AI SDK**（`ai` v7 + `@ai-sdk/anthropic` v4 + `zod` v4） | bundle background.js 26 → **400 kB**（+374 kB）；自研 loop 删除；Tool 改用 `tool({inputSchema, execute})`；`stopWhen: stepCountIs(5)` |
+| Post-MVP 阶段3 | `9751d73` / `v-ai-sdk-migration`（待打 tag） | **迁移到 Vercel AI SDK** + Tool 扩到 12 个 + system-prompt 重写 | bundle background.js 26 → **413 kB**（+387 kB）；自研 loop 删除；Tool 改用 `tool({inputSchema, execute})`；`stopWhen: stepCountIs(5)`；12 Tool 中 11 个新增于阶段4，1 个（`inspect_element`）阶段2 已就位 |
 
 **当前状态**：
-- 分支：`feature/agent-migration`，未 commit / 未 push / 未 e2e 浏览器验证
-- 回滚点：`git reset --hard v-pre-ai-sdk` 可回到 commit `5185555`
-- 下一步动作：浏览器跑通 4 个 Tool + Tool loop 后 commit + tag `v-ai-sdk-migration` + merge 到 `develop`
+- 分支：`feature/agent-migration`，已 push 5 个 commit 到远端
+- 远端链：`9751d73` → `c661352` → `8665385` → `df3db63` → `2b9803c` → `5185555`（`v-pre-ai-sdk`）
+- 待办：跑 `docs/qa/agent-e2e-checklist.md` 23 场景（spiritai tab + basicZone）→ 通过后打 tag `v-ai-sdk-migration` → 开 PR 合到 `develop`
+- 回滚点：`git reset --hard v-pre-ai-sdk` 可回到 `5185555`
 
 ## 重要注意事项
 
