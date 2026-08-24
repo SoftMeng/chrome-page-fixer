@@ -29,26 +29,33 @@ function sanitize(s: string): string {
   return out;
 }
 
-function formatSource(e: ErrorEntry): string {
-  if (e.source) {
-    return e.source + (e.line !== undefined ? `:${e.line}` : "") +
-      (e.column !== undefined ? `:${e.column}` : "");
-  }
-  if (e.kind === "resource-load") return "(resource-only)";
-  return "(none)";
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max) + "…" : s;
 }
 
+const FOCUSED_MAX = 80;
+const MESSAGE_MAX = 600;
+
 export function toMarkdown(entry: ErrorEntry): string {
-  const head = `### ${entry.kind} ${entry.level} @ ${formatTime(entry.timestamp)}`;
-  const body = sanitize(entry.message);
-  const url = sanitize(entry.url);
-  const lines: string[] = [head, body, url];
-  if (entry.source) {
-    const loc = entry.source + (entry.line !== undefined ? `:${entry.line}` : "") +
-      (entry.column !== undefined ? `:${entry.column}` : "");
-    lines.push(sanitize(loc));
+  const head = `[ERROR #1] ${entry.kind} level=${entry.level} at=${entry.capturedAt}`;
+  const lines: string[] = [head];
+  lines.push(`Page URL: ${sanitize(entry.url)}`);
+  lines.push(`Message: ${truncate(sanitize(entry.message), MESSAGE_MAX)}`);
+  if (entry.endpointUrl) {
+    const m = entry.httpMethod ?? "?";
+    lines.push(`Request: ${m} ${sanitize(entry.endpointUrl)}`);
   }
-  if (entry.stack) lines.push("```\n" + sanitize(entry.stack) + "\n```");
+  if (entry.httpStatus !== undefined || entry.responseData) {
+    const status = entry.httpStatus ?? "?";
+    const body = entry.responseData ? ` ${sanitize(entry.responseData)}` : "";
+    lines.push(`Response: ${status}${body}`);
+  }
+  if (entry.focusedSelector) {
+    lines.push(`focused: ${truncate(sanitize(entry.focusedSelector), FOCUSED_MAX)}`);
+  }
+  if (entry.stack) {
+    lines.push("```\n" + sanitize(entry.stack) + "\n```");
+  }
   return lines.join("\n");
 }
 
@@ -79,20 +86,24 @@ export function toReport(entries: ErrorEntry[]): string {
 
   sorted.forEach((e, idx) => {
     lines.push(
-      `[ERROR #${idx + 1}] kind=${e.kind} level=${e.level} at=${e.capturedAt}`,
+      `[ERROR #${idx + 1}] ${e.kind} level=${e.level} at=${e.capturedAt}`,
     );
-    if (e.resourceType) {
-      lines.push(`  resource-type: ${e.resourceType}`);
+    lines.push(`Page URL: ${sanitize(e.url)}`);
+    lines.push(`Message: ${truncate(sanitize(e.message), MESSAGE_MAX)}`);
+    if (e.endpointUrl) {
+      const m = e.httpMethod ?? "?";
+      lines.push(`Request: ${m} ${sanitize(e.endpointUrl)}`);
     }
-    lines.push(`  selector: ${e.selector || "(none)"}`);
-    lines.push(`  element: ${e.elementSummary || "(none)"}`);
-    lines.push(`  message: \`\`\`\n${sanitize(e.message)}\n\`\`\``);
-    lines.push(`  source: ${formatSource(e)}`);
-    lines.push(`  stack: \`\`\`\n${e.stack ? sanitize(e.stack) : "(none)"}\n\`\`\``);
-    lines.push(`  focused: ${e.focusedSelector || "(none)"}`);
-    if (e.triggerSelector || e.triggerElement) {
-      lines.push(`  trigger-selector: ${e.triggerSelector || "(none)"}`);
-      lines.push(`  trigger-element: ${e.triggerElement || "(none)"}`);
+    if (e.httpStatus !== undefined || e.responseData) {
+      const status = e.httpStatus ?? "?";
+      const body = e.responseData ? ` ${sanitize(e.responseData)}` : "";
+      lines.push(`Response: ${status}${body}`);
+    }
+    if (e.focusedSelector) {
+      lines.push(`focused: ${truncate(sanitize(e.focusedSelector), FOCUSED_MAX)}`);
+    }
+    if (e.stack) {
+      lines.push("```\n" + sanitize(e.stack) + "\n```");
     }
     if (idx < sorted.length - 1) lines.push("");
   });
