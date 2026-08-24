@@ -415,9 +415,32 @@ async function getBuffer(): Promise<ErrorEntry[]> {
   return buffer;
 }
 
+const QUOTA_SOFT_LIMIT_BYTES = 8 * 1024 * 1024;
+const QUOTA_TRIM_TO = 100;
+
 async function persist(next: ErrorEntry[]): Promise<void> {
-  buffer = next;
-  await chrome.storage.local.set({ [STORAGE_KEY]: next });
+  let toWrite = next;
+  try {
+    const bytesInUse = await chrome.storage.local.getBytesInUse(null);
+    if (bytesInUse > QUOTA_SOFT_LIMIT_BYTES) {
+      toWrite = next.slice(-QUOTA_TRIM_TO);
+      console.warn(
+        `[Page Fixer] storage usage ${bytesInUse}B exceeded ${QUOTA_SOFT_LIMIT_BYTES}B, trimmed buffer to ${toWrite.length} entries`,
+      );
+    }
+  } catch {
+    // getBytesInUse unavailable — proceed unguarded
+  }
+  buffer = toWrite;
+  await chrome.storage.local.set({ [STORAGE_KEY]: toWrite });
+  if (chrome.runtime.lastError) {
+    const half = toWrite.slice(0, Math.floor(toWrite.length / 2));
+    await chrome.storage.local.set({ [STORAGE_KEY]: half });
+    buffer = half;
+    console.warn(
+      `[Page Fixer] storage set failed (${chrome.runtime.lastError.message}), trimmed buffer to ${half.length} entries`,
+    );
+  }
 }
 
 function validateProxyUrl(raw: string): URL {
