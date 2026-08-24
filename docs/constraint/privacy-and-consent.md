@@ -66,7 +66,28 @@
 - `inspect_element` / `list_elements`：attribute 白名单（`ATTRIBUTE_WHITELIST`）+ text 截 20 字符；**不**返回 `value` / `textContent` / `innerHTML`
 - `get_errors` / `get_error_by_index`：返回扩展自有错误条目；**不**做内容脱敏，由用户审查 envelope 后上传
 
-### 4.3 待实现（**本批不做**）
+### 4.3 unhandledrejection 错误捕获（axios/fetch reject）
+
+当 Promise reject 携带 axios/fetch response（典型：`{ response: { config, status, data } }`）时，扩展抓取并存储以下字段：
+
+| 字段 | 来源 | 处理 |
+| --- | --- | --- |
+| `endpointUrl` | `response.config.url` 或 `response.url` | 原样 |
+| `httpMethod` | `response.config.method` | 大写 |
+| `httpStatus` | `response.status` | 数字 |
+| `requestBody` | `response.config.data` | **键级脱敏**（见 `entrypoints/shared/redact.ts`） |
+| `responseData` | `response.data` | 截前 500 字符 |
+
+**requestBody 键白名单**（值替为 `***`）：
+`token` / `access_token` / `refresh_token` / `id_token` / `authorization` / `cookie` / `set-cookie` / `password` / `pwd` / `passwd` / `secret` / `apikey` / `api_key`
+
+大小写不敏感；递归处理嵌套对象（不递归数组元素中的 object）。
+
+**不抓取**：`reason.config.headers`（通常含 `Authorization` 全字段），`reason.request`（node 端对象，浏览器无意义），`response.headers`（Set-Cookie 等敏感头）。
+
+未携带 axios/fetch response 结构的 reject（如 `throw new Error("xxx")`）——退回原行为：仅 message + stack。
+
+### 4.4 待实现（**本批不做**）
 
 | Tool | 阻塞 |
 | --- | --- |

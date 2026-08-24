@@ -57,6 +57,11 @@ export interface ErrorEntry {
   resourceType?: NetworkResourceType;
   triggerSelector?: string;
   triggerElement?: string;
+  endpointUrl?: string;
+  httpMethod?: string;
+  httpStatus?: number;
+  requestBody?: string;
+  responseData?: string;
 }
 
 export interface BridgeMessage<T = ErrorEntry> {

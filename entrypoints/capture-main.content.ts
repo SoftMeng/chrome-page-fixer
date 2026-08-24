@@ -17,6 +17,8 @@ import {
   MAX_TREE_TEXT,
   MAX_ITEM_TEXT,
 } from "./shared/tools/list-elements";
+import { previewRequest, previewResponse } from "./shared/redact";
+import { clampEntry } from "./shared/entry-size";
 
 const ATTR_WHITELIST = [
   "id",
@@ -54,7 +56,11 @@ function hashEntry(level: ErrorLevel, message: string, url: string, ts: number):
 }
 
 function post(entry: ErrorEntry): void {
-  const msg: BridgeMessage = { source: MESSAGE_SOURCE, type: MESSAGE_KIND.error, payload: entry };
+  const msg: BridgeMessage = {
+    source: MESSAGE_SOURCE,
+    type: MESSAGE_KIND.error,
+    payload: clampEntry(entry),
+  };
   try {
     window.postMessage(msg, window.location.origin);
   } catch {
@@ -422,6 +428,7 @@ export default defineContentScript({
       const message = reason instanceof Error ? reason.message : safeStringify(reason);
       const stack = reason instanceof Error ? reason.stack : undefined;
       const focused = buildSelector(document.activeElement);
+      const api = extractApiContext(reason);
       post({
         hash: hashEntry("error", message || "unhandled rejection", url, Date.now()),
         level: "error",
@@ -439,6 +446,11 @@ export default defineContentScript({
           appHint,
         stack,
         focusedSelector: focused || undefined,
+        endpointUrl: api?.endpointUrl,
+        httpMethod: api?.httpMethod,
+        httpStatus: api?.httpStatus,
+        requestBody: api?.requestBody,
+        responseData: api?.responseData,
       });
     });
 
@@ -655,6 +667,46 @@ function safeStringify(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function extractApiContext(reason: unknown): {
+  endpointUrl?: string;
+  httpMethod?: string;
+  httpStatus?: number;
+  requestBody?: string;
+  responseData?: string;
+} | null {
+  if (!reason || typeof reason !== "object") return null;
+  const r = reason as Record<string, unknown>;
+  const response = r.response as Record<string, unknown> | undefined;
+  if (!response || typeof response !== "object") return null;
+  const config = (response.config as Record<string, unknown> | undefined) ?? {};
+  const endpointUrl =
+    (typeof config.url === "string" && config.url) ||
+    (typeof response.url === "string" && response.url) ||
+    undefined;
+  const httpMethod =
+    (typeof config.method === "string" && config.method.toUpperCase()) || undefined;
+  const httpStatus =
+    typeof response.status === "number" ? response.status : undefined;
+  const requestBody = httpStatus !== undefined ? previewRequest(config.data) : undefined;
+  const responseData =
+    httpStatus !== undefined && "data" in response
+      ? previewResponse(response.data)
+      : undefined;
+  const out: {
+    endpointUrl?: string;
+    httpMethod?: string;
+    httpStatus?: number;
+    requestBody?: string;
+    responseData?: string;
+  } = {};
+  if (endpointUrl) out.endpointUrl = endpointUrl;
+  if (httpMethod) out.httpMethod = httpMethod;
+  if (httpStatus !== undefined) out.httpStatus = httpStatus;
+  if (requestBody) out.requestBody = requestBody;
+  if (responseData) out.responseData = responseData;
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 function postPageContext(): void {
