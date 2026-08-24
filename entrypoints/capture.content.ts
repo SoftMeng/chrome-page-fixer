@@ -26,6 +26,19 @@ import {
   type BridgeMessage,
 } from "./shared/types";
 
+function safeRuntimeSendMessage(message: unknown): void {
+  try {
+    if (!chrome?.runtime?.id) return;
+  } catch {
+    return;
+  }
+  try {
+    chrome.runtime.sendMessage(message as chrome.runtime.MessageOptions);
+  } catch {
+    // Extension context invalidated during reload — drop silently.
+  }
+}
+
 export default defineContentScript({
   matches: ["<all_urls>"],
   runAt: "document_start",
@@ -77,24 +90,24 @@ export default defineContentScript({
       if (data.type === INSPECT_ELEMENT_REPLY || data.type === LIST_ELEMENTS_REPLY || data.type === LIST_RESOURCE_TIMING_REPLY || data.type === GET_COMPUTED_STYLE_REPLY || data.type === GET_STORAGE_REPLY || data.type === GET_EVENT_LISTENERS_REPLY || data.type === GET_PAGE_DOM_HTML_REPLY || data.type === GET_NAVIGATION_TIMING_REPLY) {
         const payload = data.payload as { requestId?: string; result?: unknown } | undefined;
         if (!payload || typeof payload.requestId !== "string") return;
-        void chrome.runtime.sendMessage({
+        safeRuntimeSendMessage({
           type: data.type,
           payload: { requestId: payload.requestId, result: payload.result },
         });
         return;
       }
       if (data.type === CONSOLE_LOG) {
-        void chrome.runtime.sendMessage({ type: CONSOLE_LOG_RECEIVED, payload: data.payload });
+        safeRuntimeSendMessage({ type: CONSOLE_LOG_RECEIVED, payload: data.payload });
         return;
       }
       if (data.type === PAGE_CONTEXT) {
-        void chrome.runtime.sendMessage({ type: PAGE_CONTEXT, payload: data.payload });
+        safeRuntimeSendMessage({ type: PAGE_CONTEXT, payload: data.payload });
         return;
       }
       if (data.type === MESSAGE_KIND.error) {
         const payload = data.payload;
         if (!payload) return;
-        void chrome.runtime.sendMessage({ type: PAGE_ERROR, payload });
+        safeRuntimeSendMessage({ type: PAGE_ERROR, payload });
         return;
       }
     });
