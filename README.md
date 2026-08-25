@@ -1,215 +1,239 @@
-# Chrome Page Fixer
+<div align="center">
 
-> **Structurally capture browser-side errors and emit AI-friendly envelopes for Claude Code / Codex / Agent.**
+# 🛠️ Chrome Page Fixer
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Manifest V3](https://img.shields.io/badge/Manifest-V3-success.svg)](https://developer.chrome.com/docs/extensions/develop/migrate/what-is-mv3)
-[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6.svg)](https://www.typescriptlang.org)
-[![MV3 Permissions](https://img.shields.io/badge/Permissions-minimal-orange.svg)](docs/constraint/manifest-permissions.md)
+**Capture browser errors, hand them to AI, get a fix.**
 
-A Manifest V3 Chrome extension that captures page errors from the **main world** (so React/Vue/SPA errors are not lost to the isolated world), and emits a structured **envelope report** designed for AI tooling — Claude Code, Codex, or any agent — to read at a glance.
+A Manifest V3 Chrome extension that captures page errors straight from the **main world** (so React/Vue/SPA failures never slip past), wraps them in a machine-readable **envelope**, and pairs them with a built-in agent that can read your DOM, console, network, and storage — all without leaving the Side Panel.
+
+<p>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=for-the-badge" alt="License"/></a>
+  <img src="https://img.shields.io/badge/Manifest-V3-success.svg?style=for-the-badge" alt="Manifest V3"/>
+  <img src="https://img.shields.io/badge/TypeScript-strict-3178c6.svg?style=for-the-badge" alt="TypeScript strict"/>
+  <img src="https://img.shields.io/badge/Permissions-minimal-orange.svg?style=for-the-badge" alt="Minimal permissions"/>
+  <img src="https://img.shields.io/badge/Agent-Vercel_AI_SDK-000.svg?style=for-the-badge" alt="Vercel AI SDK"/>
+  <img src="https://img.shields.io/badge/Tools-12_read--only-9b59b6.svg?style=for-the-badge" alt="12 read-only Tools"/>
+</p>
+
+</div>
+
+---
+
+## ✨ Why this exists
+
+You load a page. It crashes. The browser console is a wall of text. You copy it into Claude, and the model asks: *"what route? what request? what was the focused element?"* — and you don't know.
+
+**Chrome Page Fixer fixes the capture half of that loop.**
+
+It watches every `console.*`, every uncaught exception, every unhandled rejection, every 4xx/5xx fetch, every `<img>` 502, every failed XHR — and packages them as a single, structured **envelope** the model can read at a glance. Then the built-in agent asks back via 12 read-only Tools (DOM, console buffer, network log, resource timing, storage snapshot, event listeners, page HTML, navigation timing) so you don't have to.
 
 > [!IMPORTANT]
-> **Privacy first.** The extension saves errors only to local `chrome.storage`. Network calls go **only** to a proxy URL you provide in Options. The API key is never sent to anyone except that proxy.
+> **Privacy first.** Errors stay in `chrome.storage.local`. Network calls go **only** to the proxy URL you configure. No telemetry, no remote bundle, no surprises.
 
 ---
 
-## At a glance
+## 📸 At a glance
 
-| Side Panel | Options | AI envelope |
-| :---: | :---: | :---: |
-| ![Side Panel](docs/screenshots/side-panel.svg) | ![Options](docs/screenshots/options.svg) | ![Envelope](docs/screenshots/envelope.svg) |
+<div align="center">
+<table>
+<tr>
+<td align="center" width="33%"><strong>Side Panel</strong><br/><br/><img src="docs/screenshots/side-panel.svg" width="240" alt="Side Panel"/></td>
+<td align="center" width="33%"><strong>Options</strong><br/><br/><img src="docs/screenshots/options.svg" width="240" alt="Options"/></td>
+<td align="center" width="33%"><strong>AI Envelope</strong><br/><br/><img src="docs/screenshots/envelope.svg" width="240" alt="Envelope"/></td>
+</tr>
+</table>
+</div>
 
 ---
 
-## What it does
+## 🚀 Features
 
-- Captures `console.error` / `console.warn` / `console.info`, uncaught exceptions, unhandled `Promise` rejections, and resource-load failures (script/style/img).
-- Captures native resource load failures (`<img>` 502, `<script>` 404) via `chrome.webRequest.onResponseStarted` — for the cases browser consoles log but never emit JS events.
-- Captures `fetch` / `XMLHttpRequest` 4xx and 5xx, plus network-layer failures, and attaches the most recent `click` / `submit` / `keydown` target as `triggerSelector` / `triggerElement`.
-- Renders each error as a single entry in the Side Panel with a level color bar.
-- Single-copy and bulk-copy buttons, including an **AI-friendly envelope** that names kind, level, route, page title, viewport, focused element, source, and stack.
-- BYOK + custom proxy URL — Key is stored only in `chrome.storage.local`. The extension never hardcodes any provider.
-- Multi-turn chat with stable `#N` references; "问他" reuses the most recent session that references the same error hash.
-- Anthropic **Tool Use**: the agent can call **12 read-only Tools** to enumerate the captured error buffer, query DOM elements, read console / network / storage / resource timing / event listeners / page HTML / navigation timing. Tool loop is capped at 5 rounds by SDK `stopWhen: stepCountIs(5)`.
+| | Capability |
+| --- | --- |
+| 🎯 | **MAIN-world capture** — installs in the page's own JS context, so React/Vue/framework errors don't vanish into the isolated world |
+| 📦 | **Structured envelope** — every error becomes kind / level / route / page-title / viewport / focused element / source / stack — paste-ready for any agent |
+| 🌐 | **Network fault coverage** — `webRequest` 4xx/5xx + `fetch` / `XMLHttpRequest` wrapper + native resource failures (`<img>` 502, `<script>` 404) |
+| 🖱️ | **DOM trigger context** — network errors carry the most recent `click` / `submit` / `keydown` target as `triggerSelector` / `triggerElement` |
+| 💬 | **Multi-turn chat** — stable `#N` references across turns; "问他" reuses the session that last cited the same error hash |
+| 🤖 | **12 read-only Tools** — the agent can enumerate errors, query DOM, read console / network / storage / resource timing / event listeners / page HTML / navigation timing |
+| 🛡️ | **Tool runner hard cap** — `stopWhen: stepCountIs(5)`; no write paths, no remote code, no Manifest V3 violations |
+| 🔐 | **BYOK + custom proxy** — your API key, your gateway, Anthropic Messages protocol; never sent anywhere else |
 
-## Who it's for
+---
 
-- Frontend developers debugging React / Vue / SPA errors in production.
-- Teams feeding structured errors to Claude Code for automated root-cause analysis.
-- Anyone who wants their browser-side failure context to be **machine-readable**, not a wall of console text.
+## ⚡ Quick start
 
-## Quick start
-
-### Prerequisites
-
-- Node.js 20+ and pnpm 10+
-- Chrome 121+ (Manifest V3)
-
-### Install and build
+### 1. Install & build
 
 ```bash
 pnpm install
 pnpm build
 ```
 
-The build output is `.output/chrome-mv3/`. Load it as an unpacked extension in `chrome://extensions` (enable Developer mode).
+Output lands in `.output/chrome-mv3/`. Load it as an unpacked extension at `chrome://extensions` (Developer mode on).
 
-### Use the default error fixture
+### 2. Open the Side Panel
 
-Open `tests/error-pages/index.html` in the loaded browser. The Side Panel will show three entries (console error, uncaught throw, unhandled rejection). Copy them as Markdown for human consumption, or as an envelope for AI consumption.
+Click the puzzle icon → **Chrome Page Fixer** → **Pin**. The Side Panel opens with three tabs: **Errors**, **Chat**, **History**.
 
-### Trigger a real network failure
+### 3. Trigger an error & hand it to the agent
 
-Open any page that loads a 4xx/5xx resource (e.g. a page with a 502 image) and the Side Panel will surface it as a `network` entry including the URL and status.
-
-### Configure BYOK and proxy
-
-Open the extension Options page (from `chrome://extensions` → "Extension options", or from the Side Panel status row). Default values are pre-filled:
+Open `tests/error-pages/index.html` in the loaded browser. You'll see three entries (console error, uncaught throw, unhandled rejection). Hit **Analyze recent 5** — the extension posts the envelope to your proxy and the agent replies in-place, ready to follow up.
 
 > [!TIP]
-> **The default Proxy URL is `http://127.0.0.1:5000/v1` and the default API Key is `PROXY_MANAGED`.** Both are no-ops until you point the URL at a working Anthropic-protocol proxy and replace the placeholder with a real key (or a token your proxy recognises).
->
-> The Options page auto-strips a trailing `/messages` from your Proxy URL on save, so pasting `http://127.0.0.1:5000/v1/messages` is equivalent to `http://127.0.0.1:5000/v1`.
+> **Defaults are no-ops until you opt in.** Proxy URL defaults to `http://127.0.0.1:5000/v1`, API Key defaults to `PROXY_MANAGED`. Configure both in Options before expecting the agent to talk back.
 
-| Field | Default | Notes |
+---
+
+## 🧰 The 12 read-only Tools
+
+The agent doesn't guess — it asks the page directly. Every Tool is read-only, schema-validated by `zod`, and capped at 5 loop iterations by `stopWhen: stepCountIs(5)`.
+
+| Tool | Source | What it answers |
 | --- | --- | --- |
-| API Key | `PROXY_MANAGED` | Sent as `x-api-key` header. Replace with your gateway token. |
-| Proxy URL | `http://127.0.0.1:5000/v1` | Must accept Anthropic Messages protocol. `/messages` suffix is auto-stripped. |
-| App Hint | _(empty)_ | Optional. Tells the AI where your project root is, so it can locally inspect the right files. |
+| `get_errors` | error buffer | List captured errors by kind / level / query |
+| `get_error_by_index` | error buffer | Fetch full `ErrorEntry` by stable `#N` |
+| `search_errors_by_message` | error buffer | Substring search across message / selector |
+| `inspect_element` | DOM | Tag / id / class / attribute whitelist / rect — **never** `textContent` / `innerHTML` |
+| `list_elements` | DOM | Flat count or tree skeleton, depth-controlled |
+| `get_console_messages` | console buffer | `console.log` / `info` / `warn` / `error` history |
+| `get_network_log` | webRequest buffer | 4xx/5xx history with URL + status |
+| `get_resource_timing` | `PerformanceObserver` | Per-resource load timing |
+| `get_computed_style` | DOM | 12 default `getComputedStyle` properties or custom list |
+| `get_storage_snapshot` | `localStorage` / `sessionStorage` | Keys + values (default `***` redaction, whitelist via `properties`) |
+| `get_event_listeners` | DOM (heuristic) | Inline `on*` attributes + captured triggers |
+| `get_page_dom_html` | DOM | `documentElement.outerHTML` with `maxLength` (default 8000) |
+| `get_navigation_timing` | `PerformanceNavigationTiming` | TTFB / DOMContentLoaded / load / FCP |
+
+> [!NOTE]
+> `:root` / `html` / `body` / `*` selectors are rejected at the bridge. `inspect_element` returns structure, not content — privacy is enforced at the schema layer, not just at runtime.
+
+---
+
+## 🏗️ Architecture
+
+```mermaid
+flowchart TB
+    subgraph Page["User page (https://app.example.com)"]
+        direction TB
+        MAIN["MAIN world<br/>capture-main.content.ts<br/>console / window error / fetch+ XHR wrap"]
+        ISO["ISOLATED world<br/>capture.content.ts<br/>chrome.runtime.sendMessage bridge"]
+        MAIN <-->|postMessage| ISO
+    end
+
+    ISO -->|PAGE_ERROR| BG
+
+    subgraph SW["background.ts (Service Worker)"]
+        direction TB
+        DEDUP["dedup + 200-entry ring buffer<br/>chrome.storage.local"]
+        REQ["fetch(proxyUrl, x-api-key)"]
+        WR["webRequest.onResponseStarted<br/>native 4xx/5xx"]
+        DEDUP --> REQ
+    end
+
+    BG -->|envelope + reply| SP
+
+    subgraph SP["Side Panel (React)"]
+        direction TB
+        LIST["error list<br/>(kind color bar + level + URL)"]
+        ENV["envelope copy<br/>(AI-friendly)"]
+        MD["markdown copy<br/>(human-friendly)"]
+        CHAT["multi-turn chat<br/>Vercel AI SDK + Tool Use loop ≤5"]
+    end
+
+    style MAIN fill:#fef3c7,stroke:#f59e0b
+    style ISO fill:#dbeafe,stroke:#3b82f6
+    style DEDUP fill:#dcfce7,stroke:#16a34a
+    style REQ fill:#fce7f3,stroke:#db2777
+    style WR fill:#fce7f3,stroke:#db2777
+    style CHAT fill:#ede9fe,stroke:#7c3aed
+```
+
+Three worlds, one conversation:
+
+1. **MAIN world** wraps `console.*`, `window.onerror`, `unhandledrejection`, `fetch`, and `XMLHttpRequest` — the only place those errors actually fire in modern SPAs.
+2. **ISOLATED world** relays the payload to the Service Worker via `chrome.runtime.sendMessage`, breaking out of the page's JS context.
+3. **Service Worker** dedups, ring-buffers (200 entries), persists to `chrome.storage.local`, and serves the agent when chat starts.
+4. **Side Panel** renders the list, copies envelopes, and runs the Vercel AI SDK loop with 12 Tools and a 5-step cap.
+
+---
+
+## ⚙️ Configuration
+
+Open **Options** from `chrome://extensions` → *Extension options*, or from the Side Panel status row.
+
+| Field | Default | Behaviour |
+| --- | --- | --- |
+| API Key | `PROXY_MANAGED` | Sent as `x-api-key`. Replace with your gateway token. |
+| Proxy URL | `http://127.0.0.1:5000/v1` | Must accept **Anthropic Messages** protocol. Trailing `/messages` is auto-stripped on save. |
+| App Hint | _(empty)_ | Tells the agent where your project root is, so it can locally inspect the right files. |
 
 > [!WARNING]
-> The proxy URL **must point at the Messages endpoint**. If you write `http://127.0.0.1:5000/v1/messages` it works as-is; the extension strips `/messages` before posting.
+> The proxy URL **must point at the Messages endpoint**. Paste `http://127.0.0.1:5000/v1/messages` or `http://127.0.0.1:5000/v1` — both work; the extension normalises.
 
-### Trigger an AI analysis
+---
 
-From the Side Panel, click **Analyze recent 5**. The extension posts the envelope to your proxy. The reply renders below the toolbar.
+## 🧪 Verification
 
-## Architecture
+Two checklists live in `docs/qa/`:
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│ user page (e.g. https://app.example.com)                     │
-│                                                              │
-│  ┌──── MAIN world (capture-main.content.ts) ────┐            │
-│  │ listens for console.* / window error / ...   │            │
-│  │ wraps fetch + XHR for 4xx/5xx                │            │
-│  └──────────────────┬───────────────────────────┘            │
-│                     │ postMessage({source, type, payload})    │
-│  ┌──── ISOLATED world (capture.content.ts) ─────┐            │
-│  │ chrome.runtime.sendMessage(payload) ──────────┼──┐         │
-│  └──────────────────┬───────────────────────────┘  │         │
-└─────────────────────┼───────────────────────────────┼─────────┘
-                      ▼                               │
-┌──────────────────────────────────────────────────────────────┐
-│ background.ts (Service Worker)                                │
-│                                                              │
-│  PAGE_ERROR ─► dedup + 200-entry ring buffer + storage     │
-│  ANALYZE ──► fetch(proxyUrl, {x-api-key, anthropic-version})│
-│  webRequest ─► log native resource 4xx/5xx                  │
-└──────────────────────────────────────────────────────────────┘
-                      │
-                      ▼
-┌──────────────────────────────────────────────────────────────┐
-│ Side Panel (React)                                           │
-│                                                              │
-│  ─ list (kind color bar + level + message + url)             │
-│  ─ envelope copy (AI-friendly)                               │
-│  ─ markdown copy (human-friendly)                            │
-│  ─ multi-turn chat → Vercel AI SDK → Tool Use loop (≤5)    │
-└──────────────────────────────────────────────────────────────┘
-```
+- `e2e-verification-phase1-4.md` — capture / copy / BYOK / agent path (MVP through Phase 4).
+- `agent-e2e-checklist.md` — 23-scenario grid for the 12 read-only Tools.
 
-`docs/qa/` tracks how every design choice was disputed, decided, and constrained. `docs/constraint/` is the live rulebook for the extension — what permissions are allowed, what Tool shapes are allowed, what data leaves the page.
+---
 
-## Tools (12 read-only)
+## 🗺️ Roadmap
 
-| name | source | purpose |
-| --- | --- | --- |
-| `get_errors` | buffer | List captured errors by kind/level/query |
-| `get_error_by_index` | buffer | Fetch full ErrorEntry by stable `#N` |
-| `search_errors_by_message` | buffer | Substring search across message / elementSummary / selector |
-| `inspect_element` | DOM | Single element: tag / id / class / attribute whitelist / rect (no `textContent` / `innerHTML`) |
-| `list_elements` | DOM | Flat list (count + items) or tree (skeleton, depth-controlled) |
-| `get_console_messages` | console-buffer | `console.log/info/warn/error` history |
-| `get_network_log` | network-buffer | webRequest 4xx/5xx history |
-| `get_resource_timing` | PerformanceObserver | Per-resource load timing |
-| `get_computed_style` | DOM | 12 default `getComputedStyle` properties or custom list |
-| `get_storage_snapshot` | localStorage / sessionStorage | Keys + values (default `***` redaction; `properties` whitelist) |
-| `get_event_listeners` | DOM (heuristic) | Inline `on*` attributes + captured triggers; cannot see `addEventListener` or framework virtual events |
-| `get_page_dom_html` | DOM | `documentElement.outerHTML` with `maxLength` (default 8000) |
-| `get_navigation_timing` | PerformanceNavigationTiming | Page-level timing: TTFB / DOMContentLoaded / load / FCP |
+### ✅ Shipped
 
-Bridge pattern: background → `chrome.tabs.sendMessage` (1 s timeout) → ISOLATED content → `window.postMessage` → MAIN world → reverse. `:root` / `html` / `body` / `*` selectors are rejected.
+- MVP (Phases 1–4): scaffold → capture → copy → AI envelope → BYOK + proxy
+- Network error capture via `chrome.webRequest` + `fetch`/`XHR` interception
+- AI-friendly envelope: kind, level, route, viewport, focused element, source, stack
+- Multi-turn chat with stable `#N` references and session reuse by error hash
+- `triggerSelector` / `triggerElement` on network errors (cross-origin cases honestly labelled)
+- 4 read-only Tools on a hand-rolled loop (`get_errors` / `get_error_by_index` / `search_errors_by_message` / `inspect_element`) — tag `v-pre-ai-sdk`
+- **Migrated to Vercel AI SDK v7** + `@ai-sdk/anthropic` v4 + `zod` v4 — `stopWhen: stepCountIs(5)`; hand-rolled loop deleted
+- 8 additional read-only Tools (`list_elements` / `get_console_messages` / `get_network_log` / `get_resource_timing` / `get_computed_style` / `get_storage_snapshot` / `get_event_listeners` / `get_page_dom_html` / `get_navigation_timing`)
+- System-prompt rewritten: triangle-loop thinking, 12-Tool capability map, "envelope or tool — never speculate" boundary
+- Bundle impact: `background.js` 26 → 413 kB — accepted once for L2 decision-layer capabilities
 
-See `docs/constraint/tool-design.md` for the schema, privacy rules, and the lifecycle of new Tools.
+### 🔜 Planned
 
-## Project layout
+- Source-map-aware stack resolution against a local repo path
+- Recent-action timeline (clicks / inputs, max 5) for reproduction paths
+- Write-side Tools with domain allow-list + second-confirm + audit (per `docs/constraint/agent-safety.md`)
 
-```
-chrome-page-fixer/
-├── entrypoints/                # WXT auto-discovers .ts entrypoints
-│   ├── background.ts           # Service Worker: event dispatcher + buffer
-│   ├── capture-main.content.ts # MAIN world: console/error/network hooks + Tool bridges
-│   ├── capture.content.ts      # ISOLATED world: bridge to background
-│   ├── agent/                  # Vercel AI SDK adapter (provider, run loop, Tool registry)
-│   ├── sidepanel/              # React Side Panel UI
-│   ├── options/                # React Options UI (BYOK)
-│   └── shared/                 # Types, format, storage, messaging, buffers, Tool impls
-├── tests/
-│   └── error-pages/            # Local HTML fixtures (no network)
-├── docs/
-│   ├── qa/                     # Decision records, evidence grading, e2e checklists
-│   └── constraint/             # Permissions, Tool schema, agent safety, privacy
-├── wxt.config.ts               # Manifest V3 + side_panel + options_ui
-├── tsconfig.json               # strict + noUncheckedIndexedAccess
-└── package.json
-```
+---
 
-## End-to-end verification
+## ⚠️ Known limitations
 
-- `docs/qa/e2e-verification-phase1-4.md` — capture / copy / BYOK / agent path (Phase 1–4).
-- `docs/qa/agent-e2e-checklist.md` — 23-scenario grid for the 12 read-only Tools (user fills AI replies).
+- `<img>` 502 is captured via `chrome.webRequest`, which requires `host_permissions: ["<all_urls>"]`. We accept this trade-off because JS-only paths miss it.
+- The proxy URL must be **Anthropic Messages** compatible — that's the wire format we speak. Swapping providers means swapping the SDK adapter in `entrypoints/agent/provider.ts`; the proxy contract stays the same.
+- No stream mode yet. The current reply is a single round-trip.
+- `get_event_listeners` is heuristic — it sees inline `on*` attributes and captured triggers, but **not** `addEventListener` callbacks or framework-virtual events.
 
-## Roadmap
+---
 
-### Done
+## 🤝 Contributing
 
-- Phase 1–4: scaffold, capture, copy, AI envelope, BYOK + proxy.
-- Network error capture via `chrome.webRequest` + `fetch`/`XHR` interception.
-- AI-friendly envelope report with kind, level, route, viewport, focused element, source, stack.
-- Multi-turn chat with stable `#N` references and session reuse by error hash.
-- Network errors now carry `triggerSelector` / `triggerElement` (the most recent click/submit/keydown target); cross-origin / unrecorded cases are labeled honestly.
-- 4 read-only Tools on a hand-rolled loop (`get_errors` / `get_error_by_index` / `search_errors_by_message` / `inspect_element`) at v-pre-ai-sdk.
-- Agent framework: migrated to **Vercel AI SDK v7** + `@ai-sdk/anthropic` v4 + `zod` v4. Tool loop is `stopWhen: stepCountIs(5)`. Self-rolled `runAgentWithTools` / `ContentBlock` / `TOOL_REGISTRY` removed.
-- 8 additional read-only Tools: `list_elements` / `get_console_messages` / `get_network_log` / `get_resource_timing` / `get_computed_style` / `get_storage_snapshot` / `get_event_listeners` / `get_page_dom_html` / `get_navigation_timing`.
-- system-prompt rewritten: triangle-loop thinking, 12-Tool capability map, "envelope or tool — never speculate" boundary.
-- Bundle impact: background.js 26 kB → 413 kB (+387 kB) — accepted once for "一次到位" — L2 decision-layer capabilities (description best practice, zod schema validation, `stopWhen` predicate, parallel tool calls).
-
-### Planned
-
-- Source-map-aware stack resolution against a local repo path.
-- Recent-action timeline (clicks / inputs, max 5) for reproduction paths.
-- Write-side Tools with domain allow-list + second-confirm + audit (per `docs/constraint/agent-safety.md`).
-
-## Known limitations
-
-- `<img>` 502 is captured via `chrome.webRequest`, which requires `host_permissions: ["<all_urls>"]`. We accept this privacy trade-off because JS-only paths miss it.
-- `console.info` is captured but rarely used; toggle via `format.ts` if it pollutes your list.
-- The proxy URL must be **Anthropic Messages** compatible (the wire format we speak). Switching to other providers means swapping the SDK adapter in `entrypoints/agent/provider.ts`; the proxy contract stays the same.
-- No stream mode. The current reply is a single round-trip.
-
-## Contributing
-
-Issues and PRs welcome. Read `docs/qa/` first to understand the constraint model and the evidence-grading principle. All changes must:
+Issues and PRs welcome. Read `docs/qa/` first to understand the constraint model and the evidence-grading principle. Every change must:
 
 1. Pass `pnpm typecheck` and `pnpm build`.
 2. Keep `manifest.json` permissions inside `docs/constraint/manifest-permissions.md`.
-3. Not load remote code at runtime (Manifest V3 policy).
-4. Add or update a QA record under `docs/qa/` for any new architecture decision.
+3. **Never load remote code at runtime** — Manifest V3 policy.
+4. Add or update a QA record under `docs/qa/` for any new architectural decision.
+5. Register any new Tool in `docs/constraint/tool-design.md` before merging.
 
-## License
+---
 
-Apache License 2.0. See [LICENSE](LICENSE).
+## 📄 License
+
+Apache License 2.0 — see [LICENSE](LICENSE).
 
 Copyright 2026 SoftMeng / xiangyuanmeng.
+
+<div align="center">
+
+<sub>Built with 🛠️ by people who'd rather debug an envelope than a screenshot.</sub>
+
+</div>
