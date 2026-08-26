@@ -1,6 +1,6 @@
 <div align="center">
 
-[English](README_EN.md) | 简体中文
+English | [简体中文](README.md)
 
 # 🛠️ Chrome Page Fixer
 
